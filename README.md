@@ -136,6 +136,19 @@ python -c "from main import scan_workspace, query_memory; print('OK')"
 
 You should see the server startup banner followed by `OK`.
 
+### 5. Remote / Docker Deployment (Optional)
+
+You can run the server remotely (e.g., on a Linux laptop on your LAN) using the provided `Dockerfile` and `docker-compose.yml`.
+
+1. **Build and start the container:** Mounts your `.brain` directory to persist vectors.
+
+   ```bash
+   docker compose up -d --build
+   ```
+
+2. **Network Mode:** The container runs `main.py --sse` automatically, which starts the FastMCP server over HTTP on port `8200` instead of using standard local STDIO.
+3. **Ollama Routing:** Because the server runs remotely but you want to use your powerful local Windows machine for Ollama summaries, pass `OLLAMA_HOST=your-local-ip` in your `.env` file on the remote machine. The server will route summary processing back to your local machine.
+
 ---
 
 ## IDE Registration
@@ -177,6 +190,12 @@ Add to `.cursor/mcp.json`:
 }
 ```
 
+### Remote (SSE) Registration
+
+If you deployed the server via Docker to a remote machine, you do **not** use the STDIO setup above. Instead, configure your IDE to connect via **SSE** and point it to the remote HTTP endpoint:
+
+* **URL:** `http://your-remote-server-ip:8200/sse`
+
 > The server starts **once** when the IDE loads and stays running. Tool calls are messages to that process — there is no restart per call.
 
 ---
@@ -214,6 +233,8 @@ Then tell your assistant:
 ```
 
 The assistant calls `scan_workspace`, which walks the directory, respects `.memignore`, and saves every readable file to memory.
+
+> **Duplicate-Proofing:** The `scan_workspace` tool uses deterministic hashing based on the file paths. This means you can run the scan multiple times (e.g., after updating `.memignore`) and it will safely overwrite existing records instead of creating duplicate vectors.
 
 ### Day-to-day
 
@@ -307,7 +328,7 @@ grep "ERROR" .brain/server.log
 |---|---|
 | `init_workspace(workspace_path)` | Scaffolds the project brief for a new workspace |
 | `scan_workspace(workspace_path, category?)` | Indexes all non-ignored files into memory |
-| `save_to_memory(content, workspace_path, category?)` | Summarises and stores a single fact or decision |
+| `save_to_memory(content, workspace_path, category?, source_id?)` | Summarises and stores a single fact or decision |
 | `query_memory(user_query, workspace_path, category?, use_cloud?)` | Retrieves and synthesises an answer |
 | `list_memory(workspace_path, category?, limit?)` | Lists stored memories for a workspace |
 | `list_workspaces()` | Shows all known workspaces |
@@ -334,6 +355,7 @@ Run the script from the root of `zerikai_memory`, passing the workspace ID you w
 # macOS / Linux
 venv/bin/python drop_memory.py the_workspace_id
 ```
+
 *(You can find the workspace ID by asking your AI assistant "What workspaces do you know about?" or by checking the `.brain/contexts/` folder).*
 
 ---
@@ -346,6 +368,12 @@ Caching is automatic — no flags required. The server is structured to maximise
 * The **user message** = retrieved context + query (changes every call → never cached, that's fine)
 
 A well-populated 600-token project brief means paying **\$0.028/M** instead of **\$0.28/M** on your largest token block — a 10× saving on every query after the first.
+
+---
+
+## Disclaimer
+
+This tool interacts directly with your local file system, vector databases, and LLM APIs. While every effort has been made to ensure safety (such as strict workspace isolation and deterministic hashing), the authors (Zerikai) are not responsible for any data loss, corruption, API charges, or unintended consequences resulting from the use of this software. Always ensure you have standard backups or version control for your codebase before scanning or dropping memory.
 
 ---
 
