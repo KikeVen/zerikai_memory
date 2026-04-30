@@ -1,0 +1,11 @@
+# Files
+.env
+.dockerignore
+
+# Directories
+.brain/
+__ignore/
+__pycache__
+venv/
+scripts/
+docs/
