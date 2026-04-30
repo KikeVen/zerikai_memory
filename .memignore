@@ -2,6 +2,15 @@
 node_modules/
 __pycache__/
 venv/
+__ignore/
+.brain/vector_db/
+docs/
+scripts/
+
+
+.gitignore
+.flake8
+
 .env
 dist/
 build/

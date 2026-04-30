@@ -1,6 +1,6 @@
 # Zerikai Memory — Hybrid Universal Memory Bridge
 
-> A standalone Python MCP server that gives any IDE persistent, workspace-isolated memory.  
+> A standalone Python MCP server that gives any IDE persistent, workspace-isolated memory.
 > Combines **ChromaDB** (local vector store), **Ollama** (free local summarisation), and **DeepSeek** (cloud synthesis) with automatic cost-aware routing.
 
 This implementation plan creates a highly efficient "Memory Layer" that fundamentally changes how you use tokens in Google Antigravity and VS Code Copilot. By moving the heavy lifting of context management out of the IDE chat and into your local Python MCP server, you achieve three specific savings:
@@ -214,29 +214,52 @@ The AI assistant reads this hidden metadata and automatically passes the exact `
 
 Tell your assistant:
 
-```
+```text
 "Set up memory for this project"
 ```
 
-The assistant calls `init_workspace`, which creates:
+The assistant calls `init_workspace`, which creates a pending file at:
 
-```
+```text
 .brain/contexts/<workspace_id>.md
 ```
 
-Open that file and populate it with your project's stack, architecture decisions, and domain glossary. The richer this file, the better the DeepSeek KV cache hit rate — and the cheaper every cloud query becomes.
-
 Then tell your assistant:
 
-```
-"Scan and index this workspace"
+```text
+"Scan and index the workspace."
 ```
 
-The assistant calls `scan_workspace`, which walks the directory, respects `.memignore`, and saves every readable file to memory.
+The assistant calls `scan_workspace`. This triggers the **Post-Scan Auto-Briefing**:
 
-> **Duplicate-Proofing:** The `scan_workspace` tool uses deterministic hashing based on the file paths. This means you can run the scan multiple times (e.g., after updating `.memignore`) and it will safely overwrite existing records instead of creating duplicate vectors.
+1. It walks the directory and saves summaries of every readable file to the vector database.
+2. Once the scan is complete, it reads the top 50 file summaries.
+3. It feeds those summaries to Ollama to **synthesize a definitive, highly-accurate Project Brief**.
+4. The brief is saved to the `.md` file, and the file is **locked** to protect your DeepSeek Cache.
+
+> **Cache Stability Policy:** To ensure your DeepSeek KV cache prefix stays identical (which gives you the 10x cost savings), the system will **never** overwrite your Project Brief during normal daily scans. It is only generated on the very first scan.
+
+### How to Force a Brief Refresh
+
+If you make a massive architectural pivot (e.g., migrating from React to Vue) and you *want* the AI to rewrite the brief and reset the cache, tell your assistant:
+
+```text
+"Rescan the workspace and force a refresh of the project brief."
+```
+
+*(The assistant will run `scan_workspace(force_refresh_brief=True)`).*
+
+---
 
 ### Day-to-day
+
+Tell your assistant:
+
+```text
+"Scan the workspace."
+```
+
+> **Self-Cleaning Sync:** The `scan_workspace` tool is idempotent. It uses deterministic hashing to overwrite existing file records. Additionally, it **automatically purges** any stale memories from your database if the corresponding files were deleted or added to `.memignore` since the last scan. Your memory always perfectly mirrors your codebase, without breaking the cache prefix.
 
 | You say | What happens |
 |---|---|
@@ -255,6 +278,20 @@ The assistant calls `scan_workspace`, which walks the directory, respects `.memi
 | Contains: *refactor, architect, design, audit…* | DeepSeek v4-pro | ~$0.028/M cached tokens |
 | `use_cloud=True` (explicit override) | DeepSeek | — |
 | `use_cloud=False` (explicit override) | Ollama | Free |
+
+---
+
+### 6. Retrieve the Project Brief
+
+You can now directly retrieve the current project brief for a workspace. This is useful for reviewing the synthesized project context and architecture overview before making further queries or updates.
+
+**Command:**
+
+```text
+"Show me the project brief."
+```
+
+The assistant will call `get_brief`, which retrieves the `.md` file from `.brain/contexts/` and displays its content. If no brief exists, it will suggest running `init_workspace` and `scan_workspace` to generate one.
 
 ---
 
@@ -326,8 +363,8 @@ grep "ERROR" .brain/server.log
 
 | Tool | Description |
 |---|---|
-| `init_workspace(workspace_path)` | Scaffolds the project brief for a new workspace |
-| `scan_workspace(workspace_path, category?)` | Indexes all non-ignored files into memory |
+| `init_workspace(workspace_path)` | Prepares the workspace for its initial deep scan |
+| `scan_workspace(..., force_refresh_brief?)` | Syncs code to memory and auto-synthesizes the brief |
 | `save_to_memory(content, workspace_path, category?, source_id?)` | Summarises and stores a single fact or decision |
 | `query_memory(user_query, workspace_path, category?, use_cloud?)` | Retrieves and synthesises an answer |
 | `list_memory(workspace_path, category?, limit?)` | Lists stored memories for a workspace |

@@ -1,6 +1,7 @@
 # Files
 .env
 .dockerignore
+.flake8
 
 # Directories
 .brain/

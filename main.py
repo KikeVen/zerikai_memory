@@ -105,6 +105,48 @@ def _derive_workspace_id(workspace_path: str) -> str:
     short_hash = hashlib.md5(path.encode()).hexdigest()[:6]
     return f"{slug}_{short_hash}"
 
+UNINITIALIZED_MARKER = "<!-- ZERIKAI_PENDING_SYNTHESIS -->"
+
+async def _synthesize_deep_brief(workspace_id: str) -> str:
+    """
+    Pulls file summaries from ChromaDB and uses Ollama to generate
+    a comprehensive, definitive project brief.
+    """
+    log.info("_synthesize_deep_brief | Generating deep brief for %s", workspace_id)
+    collection = _get_collection(workspace_id)
+    
+    # Grab up to 50 core file summaries to build the architecture context
+    with _db_lock:
+        results = collection.get(where={"category": "codebase"}, limit=50)
+    
+    docs = results.get("documents", [])
+    if not docs:
+        return f"# Project Brief — {workspace_id}\n\nNo codebase files found during scan."
+        
+    context_lines = [f"- {doc}" for doc in docs]
+    context_text = "\n".join(context_lines)
+    
+    prompt = (
+        f"You are a senior software architect analyzing the `{workspace_id}` project. "
+        "Based on the following file summaries from the codebase, write a definitive technical Project Brief in Markdown.\n"
+        "Detail the tech stack, core architecture, primary conventions, and the purpose of the project.\n"
+        "Output MUST be comprehensive (at least 500 words) to ensure deep context caching. "
+        "Do not output the pending synthesis marker.\n\n"
+        "=== CODEBASE SUMMARIES ===\n"
+        f"{context_text}"
+    )
+    
+    try:
+        result = await asyncio.to_thread(
+            ol_client.generate,
+            model=OLLAMA_MODEL,
+            prompt=prompt,
+        )
+        return result["response"].strip()
+    except Exception as exc:
+        log.error("_synthesize_deep_brief | failed: %s", exc)
+        return f"# Project Brief — {workspace_id}\n\n(Auto-synthesis failed: {exc})"
+
 
 def _get_collection(workspace_id: str):
     """Returns (or creates) the ChromaDB collection for this workspace."""
@@ -203,30 +245,24 @@ def _load_memignore(workspace_path: str) -> list[str]:
 def _is_ignored(file_path: Path, workspace_root: Path, patterns: list[str]) -> bool:
     """
     Returns True if file_path should be SKIPPED based on .memignore patterns.
-
-    Pattern rules (same mental model as .gitignore):
-      - Patterns ending with /  → match any directory component by that name.
-      - All other patterns      → matched against both the filename and the
-                                  full relative path (as a POSIX string).
+    Matches the mental model of .gitignore.
     """
     try:
         rel = file_path.relative_to(workspace_root)
     except ValueError:
-        return False  # path outside workspace — leave it alone
+        return False
 
-    rel_posix = rel.as_posix()          # e.g. "src/utils/helpers.py"
-    parts     = rel.parts               # e.g. ("src", "utils", "helpers.py")
+    rel_posix = rel.as_posix()
+    parts = rel.parts
 
     for pattern in patterns:
-        if pattern.endswith("/"):
-            # Directory pattern — skip if ANY parent folder matches
-            dir_name = pattern.rstrip("/")
-            if any(fnmatch.fnmatch(part, dir_name) for part in parts[:-1]):
-                return True
-        else:
-            # File/glob pattern — match against filename OR full relative path
-            if fnmatch.fnmatch(file_path.name, pattern) or fnmatch.fnmatch(rel_posix, pattern):
-                return True
+        p = pattern.rstrip("/")
+        # 1. Match against any part of the path (covers directory names without slashes)
+        if any(fnmatch.fnmatch(part, p) for part in parts):
+            return True
+        # 2. Match against full relative path or filename
+        if fnmatch.fnmatch(rel_posix, pattern) or fnmatch.fnmatch(file_path.name, pattern):
+            return True
 
     return False
 
@@ -284,12 +320,8 @@ async def init_workspace(workspace_path: str) -> str:
     """
     Scaffolds the project brief file for a new workspace.
 
-    Call this once when setting up a new project. It creates:
-        zerikai_memory/.brain/contexts/<workspace_id>.md
-
-    Edit that file to add your stack, architecture decisions, conventions,
-    and domain glossary. The richer this file, the better the DeepSeek
-    cache hit rate and synthesis quality.
+    It creates a marker file indicating that the project is waiting
+    for its first `scan_workspace` to automatically synthesize the brief.
 
     Args:
         workspace_path: Absolute path to the project root.
@@ -305,34 +337,12 @@ async def init_workspace(workspace_path: str) -> str:
             f"Edit: {context_file}"
         )
 
-    template = f"""# Project Brief — {workspace_id}
-# This file is loaded as the DeepSeek system message prefix on every query.
-# Keep it stable (don't change it mid-project) to maximise KV cache hit rate.
-# Aim for 500–1000 tokens for meaningful cache savings.
-
-## Stack
-- Language:
-- Framework:
-- Database:
-- Frontend:
-
-## Architecture Decisions
--
-
-## Conventions & Patterns
--
-
-## Domain Glossary
--
-
-## Known Constraints
--
-"""
+    template = f"{UNINITIALIZED_MARKER}\n# Project Brief — {workspace_id}\n\n(Waiting for initial scan... run `scan_workspace` to auto-generate the architecture brief)"
     context_file.write_text(template, encoding="utf-8")
+    
     return (
         f"Workspace initialised: `{workspace_id}`\n"
-        f"Populate the project brief at: {context_file}\n"
-        f"Then call `save_to_memory` to start building project memory."
+        f"Run `scan_workspace` to build project memory and generate the brief."
     )
 
 
@@ -619,6 +629,37 @@ async def update_brief(workspace_path: str, new_content: str) -> str:
         return f"ERROR: Could not update brief — {exc}"
 
 
+# ---------------------------------------------------------------------------
+# Tool: get_brief
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def get_brief(workspace_path: str) -> str:
+    """
+    Retrieves the current project brief for a workspace.
+    Use this to review the synthesized project context and architecture overview.
+    
+    Args:
+        workspace_path: Absolute path to the project root.
+    """
+    try:
+        workspace_id = _derive_workspace_id(workspace_path)
+        context_dir = Path(DB_PATH) / "contexts"
+        context_file = context_dir / f"{workspace_id}.md"
+        
+        if not context_file.exists():
+            return (
+                f"No brief found for workspace `{workspace_id}`.\n"
+                f"Run `init_workspace` followed by `scan_workspace` to generate one."
+            )
+        
+        brief_content = context_file.read_text(encoding="utf-8")
+        return brief_content
+    except Exception as exc:
+        log.error("get_brief failed: %s", exc)
+        return f"ERROR: Could not retrieve brief — {exc}"
+
+
 
 # ---------------------------------------------------------------------------
 # Tool: scan_workspace
@@ -628,20 +669,24 @@ async def update_brief(workspace_path: str, new_content: str) -> str:
 async def scan_workspace(
     workspace_path: str,
     category: str = "codebase",
+    force_refresh_brief: bool = False,
 ) -> str:
     """
     Walks the entire workspace directory, respects .memignore, and saves
     every readable text file to this workspace's persistent memory.
 
-    Run this once after init_workspace to build the initial memory index.
-    Safe to re-run — duplicate content produces near-duplicate vectors
-    which are naturally down-ranked during retrieval.
+    Idempotent and Self-Cleaning:
+    - Overwrites existing files with deterministic IDs.
+    - Automatically purges memories from this category that are no longer 
+      present or are now ignored.
 
     Args:
         workspace_path: Absolute path to the project root.
         category:       Tag applied to every saved memory (default 'codebase').
+        force_refresh_brief: If True, forces the synthesis of a new project brief.
     """
     workspace_root = Path(workspace_path)
+    workspace_id = _derive_workspace_id(workspace_path)
     if not workspace_root.is_dir():
         return f"ERROR: {workspace_path} is not a directory."
 
@@ -651,6 +696,13 @@ async def scan_workspace(
         workspace_path, len(patterns),
     )
 
+    # Track existing IDs in this category to perform a sync/purge at the end
+    collection = _get_collection(workspace_id)
+    with _db_lock:
+        existing = collection.get(where={"category": category})
+        old_ids = set(existing.get("ids", []))
+    
+    scanned_ids = set()
     saved   = 0
     skipped = 0
     errors  = 0
@@ -692,6 +744,11 @@ async def scan_workspace(
                 category=category,
                 source_id=rel_path,
             )
+            
+            # Record that this ID is still valid
+            doc_id = hashlib.md5(f"{workspace_id}:{rel_path}".encode()).hexdigest()
+            scanned_ids.add(doc_id)
+            
             saved += 1
             log.info("scan_workspace | saved: %s", rel_path)
 
@@ -699,12 +756,37 @@ async def scan_workspace(
             errors += 1
             log.error("scan_workspace | error reading %s: %s", file_path, exc)
 
-    return (
-        f"Scan complete for `{workspace_root.name}`:\n"
-        f"  Saved:   {saved} files\n"
-        f"  Skipped: {skipped} files (ignored / binary / too large)\n"
-        f"  Errors:  {errors} files"
+    # Purge stale memories: anything that was in the DB but NOT found in this scan
+    stale_ids = list(old_ids - scanned_ids)
+    if stale_ids:
+        with _db_lock:
+            collection.delete(ids=stale_ids)
+        log.info("scan_workspace | purged %d stale memories for %s", len(stale_ids), workspace_id)
+
+    # Brief Synthesis Logic
+    context_dir = Path(DB_PATH) / "contexts"
+    context_file = context_dir / f"{workspace_id}.md"
+    
+    brief_synthesized = False
+    if context_file.exists():
+        current_text = context_file.read_text(encoding="utf-8", errors="ignore")
+        needs_synthesis = force_refresh_brief or (UNINITIALIZED_MARKER in current_text)
+        
+        if needs_synthesis:
+            log.info("scan_workspace | triggering deep brief synthesis for %s", workspace_id)
+            new_brief = await _synthesize_deep_brief(workspace_id)
+            context_file.write_text(new_brief, encoding="utf-8")
+            brief_synthesized = True
+
+    stats = (
+        f"Scan complete for `{workspace_id}`\n"
+        f"- Saved/Updated: {saved}\n"
+        f"- Skipped: {skipped}\n"
+        f"- Purged: {len(stale_ids)}\n"
+        f"- Errors: {errors}\n"
+        f"- Brief Synthesized: {'Yes' if brief_synthesized else 'No (Cache Stable)'}"
     )
+    return stats
 
 
 # ---------------------------------------------------------------------------
