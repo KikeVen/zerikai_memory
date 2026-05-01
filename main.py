@@ -25,6 +25,7 @@ from config import (
     DB_PATH,
     CLOUD_ESCALATION_WORD_COUNT,
     CLOUD_ESCALATION_KEYWORDS,
+    SYNTHESIZE_WITH_CLOUD,
 )
 
 from logging.handlers import RotatingFileHandler
@@ -96,56 +97,253 @@ def _derive_workspace_id(workspace_path: str) -> str:
 
     Uses folder name + 6-char MD5 of the full path to handle projects
     that share the same folder name (e.g. two repos both named 'api').
+    
+    Normalizes paths to lowercase and resolves to absolute form to ensure
+    consistency across different path representations (d:\\ vs D:\\, / vs \\).
     """
     if not workspace_path:
         return "default"
-    path = workspace_path.rstrip("/\\")
-    name = os.path.basename(path)
+    # Normalize the path to prevent duplicate workspace IDs due to:
+    # - Case differences (d:\ vs D:\)
+    # - Separator differences (/ vs \)
+    # - Relative vs absolute paths
+    normalized_path = str(Path(workspace_path).resolve()).lower()
+    name = os.path.basename(normalized_path)
     slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
-    short_hash = hashlib.md5(path.encode()).hexdigest()[:6]
+    short_hash = hashlib.md5(normalized_path.encode()).hexdigest()[:6]
     return f"{slug}_{short_hash}"
 
 UNINITIALIZED_MARKER = "<!-- ZERIKAI_PENDING_SYNTHESIS -->"
 
-async def _synthesize_deep_brief(workspace_id: str) -> str:
+async def _synthesize_deep_brief(workspace_id: str, use_cloud: bool = False) -> str:
     """
-    Pulls file summaries from ChromaDB and uses Ollama to generate
-    a comprehensive, definitive project brief.
+    Generates a comprehensive project brief using iterative section-by-section synthesis.
+    
+    Instead of overwhelming the model with 50 summaries at once, this approach:
+    1. Queries the vector DB with section-specific semantic searches
+    2. Feeds only relevant context (10-15 results) to the model per section
+    3. Uses simple, direct prompts like the original approach
+    4. Builds the brief incrementally, one section at a time
+    
+    This dramatically improves output quality for small local models by:
+    - Reducing context window pressure
+    - Providing focused, relevant information per section
+    - Using clear, straightforward instructions
+    
+    Args:
+        workspace_id: The workspace identifier
+        use_cloud: If True, uses DeepSeek for higher quality (small cost).
+                   If False, uses Ollama (free, may include noise).
     """
-    log.info("_synthesize_deep_brief | Generating deep brief for %s", workspace_id)
+    log.info("_synthesize_deep_brief | Starting iterative synthesis for %s", workspace_id)
     collection = _get_collection(workspace_id)
     
-    # Grab up to 50 core file summaries to build the architecture context
+    # Check if we have any codebase data at all
     with _db_lock:
-        results = collection.get(where={"category": "codebase"}, limit=50)
+        check = collection.get(where={"category": "codebase"}, limit=1)
+    if not check.get("documents"):
+        return f"# Project Brief: {workspace_id}\n\nNo codebase files found during scan."
     
-    docs = results.get("documents", [])
-    if not docs:
-        return f"# Project Brief — {workspace_id}\n\nNo codebase files found during scan."
+    # Section definitions with semantic queries and format-guided prompts
+    sections = [
+        {
+            "heading": "## Overview",
+            "query": "project purpose main features domain application what does system do readme",
+            "prompt_template": (
+                f"You are a senior software architect analyzing the `{workspace_id}` project. "
+                "Based on the following file summaries from the codebase, write the Overview section. "
+                "Be concise and direct. Do not preface your answer with any introductory sentence.\n\n"
+                f"Use this format (use the actual project name, not a placeholder):\n"
+                f"`{workspace_id}` is a [type] system designed to [purpose]. "
+                "It integrates with [external services] to [key function]. "
+                "[One sentence on who it is for or its domain.]\n\n"
+                "=== CODEBASE SUMMARIES ===\n"
+                "{context}\n\n"
+                "Write the Overview section:"
+            ),
+        },
+        {
+            "heading": "## Technical Stack",
+            "query": "dependencies requirements packages frameworks libraries database docker deployment python javascript",
+            "prompt_template": (
+                f"You are a senior software architect analyzing the `{workspace_id}` project. "
+                "Based on the following file summaries from the codebase, list the Technical Stack. "
+                "Be concise and direct. Do not preface your answer with any introductory sentence. "
+                "Only list third-party libraries explicitly found in dependency files (requirements.txt, package.json, pyproject.toml, etc.). "
+                "Do not include standard library modules or internal framework utilities.\n\n"
+                "Use this format:\n"
+                "* **Backend:** [Language/Framework]\n"
+                "* **Database:** [Database Technology]\n"
+                "* **Workflow Management:** [Platform/Tool if any]\n"
+                "* **API Integration:** [External services and what they do]\n"
+                "* **Frontend:** [UI Framework/Technology]\n"
+                "* **Libraries:**\n"
+                "  * [Category]: [Library names]\n\n"
+                "=== CODEBASE SUMMARIES ===\n"
+                "{context}\n\n"
+                "List the Technical Stack:"
+            ),
+        },
+        {
+            "heading": "## Core Architecture",
+            "query": "architecture components structure models views api routes data flow patterns authentication services",
+            "prompt_template": (
+                f"You are a senior software architect analyzing the `{workspace_id}` project. "
+                "Based on the following file summaries from the codebase, describe the Core Architecture. "
+                "Be concise and direct. Start directly with 'The application consists of the following layers:' — no other introductory text.\n\n"
+                "Use this format:\n"
+                "The application consists of the following layers:\n"
+                "1. **Frontend:** [Technology and what it handles]\n"
+                "2. **Backend:** [Framework and what it handles]\n"
+                "3. **[Other Layer]:** [Technology and what it handles]\n\n"
+                "=== CODEBASE SUMMARIES ===\n"
+                "{context}\n\n"
+                "Describe the Core Architecture:"
+            ),
+        },
+        {
+            "heading": "## Primary Conventions",
+            "query": "code organization conventions standards tests testing naming structure folders config style error handling",
+            "prompt_template": (
+                f"You are a senior software architect analyzing the `{workspace_id}` project. "
+                "Based on the following file summaries from the codebase, list the Primary Conventions. "
+                "Be concise and direct. Start directly with the first bullet point — no introductory text.\n\n"
+                "Use this format:\n"
+                "* **Code Organization:** [How code is structured into directories/modules]\n"
+                "* **API Documentation:** [Standard used if any]\n"
+                "* **Error Handling:** [Method and logging mechanism]\n"
+                "* **Database Schema:** [Where defined and how updated]\n\n"
+                "=== CODEBASE SUMMARIES ===\n"
+                "{context}\n\n"
+                "List the Primary Conventions:"
+            ),
+        },
+        {
+            "heading": "## Purpose",
+            "query": "purpose goals objectives why business problem solution users target audience",
+            "prompt_template": (
+                f"You are a senior software architect analyzing the `{workspace_id}` project. "
+                "Based on the following file summaries from the codebase, explain the Purpose. "
+                "Be concise and direct. Do not preface your answer with any introductory sentence.\n\n"
+                f"Use this format (replace [Project Name] with the actual name inferred from the codebase):\n"
+                f"`{workspace_id}` aims to [goal] using [tech summary] to reduce [user burden] "
+                "and evaluate performance against [key objectives].\n\n"
+                "=== CODEBASE SUMMARIES ===\n"
+                "{context}\n\n"
+                "Explain the Purpose:"
+            ),
+        },
+        {
+            "heading": "## Key Files & Directories",
+            "query": "important files main entry point settings configuration models views routes directory structure",
+            "prompt_template": (
+                f"You are a senior software architect analyzing the `{workspace_id}` project. "
+                "Based on the following file summaries from the codebase, identify Key Files & Directories. "
+                "Be concise and direct. Start directly with the first bullet point — no introductory text.\n\n"
+                "Use this format:\n"
+                "* **`path/to/file.ext`** - [Brief purpose]\n"
+                "* **`directory/`** - [What this directory contains]\n\n"
+                "Focus on entry points, configuration files, core models, main routers, and key directories. "
+                "Omit test files and generic items.\n\n"
+                "=== CODEBASE SUMMARIES ===\n"
+                "{context}\n\n"
+                "List Key Files & Directories:"
+            ),
+        },
+        {
+            "heading": "## Development & Testing",
+            "query": "setup install dependencies run server test pytest commands docker development environment local",
+            "prompt_template": (
+                f"You are a senior software architect analyzing the `{workspace_id}` project. "
+                "Based on the following file summaries from the codebase, describe Development & Testing setup. "
+                "Be concise and direct. Start directly with the first bullet point — no introductory text.\n\n"
+                "Use this format:\n"
+                "* **Setup:** [How to install dependencies and prepare environment]\n"
+                "* **Running Locally:** [Command to start the development server]\n"
+                "* **Testing:** [Test framework and command to run tests]\n"
+                "* **Build/Deploy:** [Build process or containerization if present]\n\n"
+                "=== CODEBASE SUMMARIES ===\n"
+                "{context}\n\n"
+                "Describe Development & Testing:"
+            ),
+        },
+        {
+            "heading": "## Data Flow & Request Lifecycle",
+            "query": "request response flow authentication lifecycle pipeline process middleware routing data flow",
+            "prompt_template": (
+                f"You are a senior software architect analyzing the `{workspace_id}` project. "
+                "Based on the following file summaries from the codebase, describe the Data Flow & Request Lifecycle. "
+                "Be concise and direct. Start directly with 'A typical request flows through:' — no other introductory text.\n\n"
+                "Use this format:\n"
+                "A typical request flows through:\n"
+                "1. **[Entry Point]:** [What happens first]\n"
+                "2. **[Processing Layer]:** [How request is processed]\n"
+                "3. **[Data Layer]:** [How data is accessed/modified]\n"
+                "4. **[Response]:** [How response is generated]\n\n"
+                "Include authentication flow if present.\n\n"
+                "=== CODEBASE SUMMARIES ===\n"
+                "{context}\n\n"
+                "Describe Data Flow & Request Lifecycle:"
+            ),
+        },
+    ]
+    
+    brief_parts = [f"# Project Brief: {workspace_id}\n"]
+    
+    for section in sections:
+        log.info("_synthesize_deep_brief | Generating: %s", section["heading"])
         
-    context_lines = [f"- {doc}" for doc in docs]
-    context_text = "\n".join(context_lines)
+        # Semantic search for section-specific context
+        with _db_lock:
+            results = collection.query(
+                query_texts=[section["query"]],
+                n_results=15,
+                where={"category": "codebase"},
+            )
+        
+        docs = results.get("documents", [[]])[0]
+        if not docs:
+            # Fallback: grab any available context
+            with _db_lock:
+                fallback = collection.get(where={"category": "codebase"}, limit=15)
+            docs = fallback.get("documents", [])
+        
+        context = "\n\n".join(docs)
+        prompt = section["prompt_template"].format(context=context)
+        
+        try:
+            if use_cloud:
+                # Use DeepSeek for high-quality synthesis
+                response = await asyncio.to_thread(
+                    ds_client.chat.completions.create,
+                    model=DEEPSEEK_MODEL_FAST,
+                    messages=[
+                        {"role": "system", "content": "You are a senior software architect."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0,
+                    max_tokens=2048,
+                )
+                section_content = response.choices[0].message.content.strip()
+            else:
+                # Use Ollama for free local synthesis
+                result = await asyncio.to_thread(
+                    ol_client.generate,
+                    model=OLLAMA_MODEL,
+                    prompt=prompt,
+                    options={"temperature": 0},
+                )
+                section_content = result["response"].strip()
+            
+            brief_parts.append(f"\n{section['heading']}\n\n{section_content}\n")
+            log.info("_synthesize_deep_brief | ✓ %s complete", section["heading"])
+        except Exception as exc:
+            log.error("_synthesize_deep_brief | Failed on %s: %s", section["heading"], exc)
+            brief_parts.append(f"\n{section['heading']}\n\n(Section generation failed: {exc})\n")
     
-    prompt = (
-        f"You are a senior software architect analyzing the `{workspace_id}` project. "
-        "Based on the following file summaries from the codebase, write a definitive technical Project Brief in Markdown.\n"
-        "Detail the tech stack, core architecture, primary conventions, and the purpose of the project.\n"
-        "Output MUST be comprehensive (at least 500 words) to ensure deep context caching. "
-        "Do not output the pending synthesis marker.\n\n"
-        "=== CODEBASE SUMMARIES ===\n"
-        f"{context_text}"
-    )
-    
-    try:
-        result = await asyncio.to_thread(
-            ol_client.generate,
-            model=OLLAMA_MODEL,
-            prompt=prompt,
-        )
-        return result["response"].strip()
-    except Exception as exc:
-        log.error("_synthesize_deep_brief | failed: %s", exc)
-        return f"# Project Brief — {workspace_id}\n\n(Auto-synthesis failed: {exc})"
+    final_brief = "".join(brief_parts)
+    log.info("_synthesize_deep_brief | Complete for %s", workspace_id)
+    return final_brief
 
 
 def _get_collection(workspace_id: str):
@@ -774,7 +972,15 @@ async def scan_workspace(
         
         if needs_synthesis:
             log.info("scan_workspace | triggering deep brief synthesis for %s", workspace_id)
-            new_brief = await _synthesize_deep_brief(workspace_id)
+            new_brief = await _synthesize_deep_brief(workspace_id, use_cloud=SYNTHESIZE_WITH_CLOUD)
+            context_file.write_text(new_brief, encoding="utf-8")
+            brief_synthesized = True
+    else:
+        # First scan - auto-generate the brief if we have any data
+        if saved > 0:
+            log.info("scan_workspace | first scan detected, auto-generating brief for %s", workspace_id)
+            new_brief = await _synthesize_deep_brief(workspace_id, use_cloud=SYNTHESIZE_WITH_CLOUD)
+            context_dir.mkdir(parents=True, exist_ok=True)
             context_file.write_text(new_brief, encoding="utf-8")
             brief_synthesized = True
 

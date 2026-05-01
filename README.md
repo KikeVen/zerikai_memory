@@ -1,7 +1,9 @@
 # Zerikai Memory — Hybrid Universal Memory Bridge
 
-> A standalone Python MCP server that gives any IDE persistent, workspace-isolated memory.
+> A standalone **local-only** Python MCP server that gives any IDE persistent, workspace-isolated memory.
 > Combines **ChromaDB** (local vector store), **Ollama** (free local summarisation), and **DeepSeek** (cloud synthesis) with automatic cost-aware routing.
+
+> **Note:** This server runs locally on your development machine. Each IDE connects via STDIO to its own server process, with direct filesystem access for workspace scanning.
 
 This implementation plan creates a highly efficient "Memory Layer" that fundamentally changes how you use tokens in Google Antigravity and VS Code Copilot. By moving the heavy lifting of context management out of the IDE chat and into your local Python MCP server, you achieve three specific savings:
 
@@ -82,6 +84,29 @@ zerikai_memory/
 
 ---
 
+## Project Brief Structure
+
+Each workspace gets an auto-generated project brief (`.brain/contexts/<workspace_id>.md`) with an **8-section structure** optimized for DeepSeek KV caching:
+
+1. **Overview** — Project purpose, key features, and target users
+2. **Technical Stack** — Backend, database, APIs, frontend, and libraries
+3. **Core Architecture** — System layers and component responsibilities
+4. **Primary Conventions** — Code organization, API docs, error handling, schema management
+5. **Purpose** — Project goals and success criteria
+6. **Key Files & Directories** — Important entry points, configs, and directory structure
+7. **Development & Testing** — Setup, run commands, test framework, build process
+8. **Data Flow & Request Lifecycle** — Request processing, authentication, typical flow
+
+**Benefits:**
+- **1000-1200 tokens** per brief → optimal cache stability
+- **10x cost savings** via DeepSeek cache hits (identical prefix across queries)
+- **Semantic search friendly** → accurate context retrieval
+- **Human-readable** → can be manually reviewed/edited
+
+The brief is synthesized using **DeepSeek v4-flash** with section-by-section generation (15 semantic search results per section) for accuracy.
+
+---
+
 ## Prerequisites
 
 | Dependency | Purpose | Install |
@@ -136,19 +161,6 @@ python -c "from main import scan_workspace, query_memory; print('OK')"
 
 You should see the server startup banner followed by `OK`.
 
-### 5. Remote / Docker Deployment (Optional)
-
-You can run the server remotely (e.g., on a Linux laptop on your LAN) using the provided `Dockerfile` and `docker-compose.yml`.
-
-1. **Build and start the container:** Mounts your `.brain` directory to persist vectors.
-
-   ```bash
-   docker compose up -d --build
-   ```
-
-2. **Network Mode:** The container runs `main.py --sse` automatically, which starts the FastMCP server over HTTP on port `8200` instead of using standard local STDIO.
-3. **Ollama Routing:** Because the server runs remotely but you want to use your powerful local Windows machine for Ollama summaries, pass `OLLAMA_HOST=your-local-ip` in your `.env` file on the remote machine. The server will route summary processing back to your local machine.
-
 ---
 
 ## IDE Registration
@@ -189,12 +201,6 @@ Add to `.cursor/mcp.json`:
   }
 }
 ```
-
-### Remote (SSE) Registration
-
-If you deployed the server via Docker to a remote machine, you do **not** use the STDIO setup above. Instead, configure your IDE to connect via **SSE** and point it to the remote HTTP endpoint:
-
-* **URL:** `http://your-remote-server-ip:8200/sse`
 
 > The server starts **once** when the IDE loads and stays running. Tool calls are messages to that process — there is no restart per call.
 
@@ -281,7 +287,7 @@ Tell your assistant:
 
 ---
 
-### 6. Retrieve the Project Brief
+### 5. Retrieve the Project Brief
 
 You can now directly retrieve the current project brief for a workspace. This is useful for reviewing the synthesized project context and architecture overview before making further queries or updates.
 

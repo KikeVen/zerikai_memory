@@ -26,6 +26,11 @@ elif not _host.startswith("http"):
     _host = f"http://{_host}:11434"
 OLLAMA_HOST = _host
 
+# Brief synthesis mode
+# Set to True to use DeepSeek for project brief generation (higher quality, small cost)
+# Set to False to use Ollama (free, but may include noise in Tech Stack)
+SYNTHESIZE_WITH_CLOUD = True
+
 # Storage root — all workspace data lives here
 # Resolves to zerikai_memory/.brain/ — matches the project structure spec exactly.
 # vector_db/ and contexts/ are sub-directories created on demand.

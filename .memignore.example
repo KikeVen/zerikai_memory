@@ -2,7 +2,6 @@
 node_modules/
 __pycache__/
 venv/
-__ignore/
 .brain/vector_db/
 docs/
 scripts/
