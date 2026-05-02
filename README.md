@@ -381,7 +381,9 @@ __pycache__/
 dist/
 build/
 
-# File patterns
+# File/Folder patterns
+**/test/
+**/tests/
 .env
 *.log
 *.lock

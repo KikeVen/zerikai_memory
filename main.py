@@ -448,7 +448,7 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
                 "Omit transitive dependencies (e.g., certifi, charset-normalizer, idna, etc.), "
                 "low-level utilities, and standard library modules. "
                 "Focus on frameworks, databases, and major integrations that define the project's architecture.\n\n"
-                "Use this format:\n"
+                "Use this format:\n\n"
                 "* **Backend:** [Language/Framework]\n"
                 "* **Database:** [Database Technology]\n"
                 "* **API Integration:** [External services and what they do]\n"
