@@ -12,8 +12,8 @@ This implementation plan creates a highly efficient "Memory Layer" that fundamen
 DeepSeek's KV Caching is the core "credit saver" in this setup.
 
 * The Problem: Standard LLM calls re-process your entire project brief (stack, rules, patterns) every time you ask a question.
-* The Fix: Your _build_system_message puts the stable "Project Brief" first. DeepSeek recognizes this identical prefix and only charges you ~$0.028/M tokens (Cache Hit) instead of ~$0.28/M (Cache Miss).
-* Result: You can feed the AI a massive 1,000-token project manual for virtually zero cost after the first query of the session.
+* The Fix: Your _build_system_message puts the stable "Project Brief" first. DeepSeek recognizes this identical prefix and only charges you ~$0.0028/M tokens (Cache Hit) instead of ~$0.14/M (Cache Miss) for v4-flash.
+* Result: You can feed the AI a massive 1,000-token project manual for virtually zero cost after the first query of the session—cache hits are **50x cheaper** than cache misses.
 
 ------------------------------
 
@@ -71,6 +71,7 @@ One server process handles **multiple projects simultaneously**. Each project ge
 zerikai_memory/
 ├── .brain/                       # Created on first run — do NOT commit
 │   ├── server.log                # Rotating log file (5 MB cap)
+│   ├── token_usage.db            # SQLite database for DeepSeek token tracking
 │   ├── vector_db/                # ChromaDB — one sub-collection per workspace
 │   └── contexts/                 # Per-workspace project briefs
 ├── .env                          # API keys (never commit)
@@ -86,16 +87,17 @@ zerikai_memory/
 
 ## Project Brief Structure
 
-Each workspace gets an auto-generated project brief (`.brain/contexts/<workspace_id>.md`) with an **8-section structure** optimized for DeepSeek KV caching:
+Each workspace gets an auto-generated project brief (`.brain/contexts/<workspace_id>.md`) with a **9-section structure** optimized for DeepSeek KV caching:
 
 1. **Overview** — Project purpose, key features, and target users
 2. **Technical Stack** — Backend, database, APIs, frontend, and libraries
 3. **Core Architecture** — System layers and component responsibilities
 4. **Primary Conventions** — Code organization, API docs, error handling, schema management
 5. **Purpose** — Project goals and success criteria
-6. **Key Files & Directories** — Important entry points, configs, and directory structure
+6. **Key Scripts, Files & Directories** — Important entry points, scripts, configs, and directory structure
 7. **Development & Testing** — Setup, run commands, test framework, build process
 8. **Data Flow & Request Lifecycle** — Request processing, authentication, typical flow
+9. **Future Roadmap** — Planned features, TODOs, and architectural improvements
 
 **Benefits:**
 - **1000-1200 tokens** per brief → optimal cache stability
@@ -141,17 +143,30 @@ pip install -r requirements.txt
 ```ini
 DEEPSEEK_API_KEY=your_deepseek_key_here
 
-# Fallback when auto-routing is inconclusive. Options: "local" | "cloud"
-DEFAULT_MEMORY_MODE=local
+# Memory Mode controls which LLM is used:
+# - "cloud": DeepSeek for all operations (highest quality, tracked)
+# - "hybrid": Ollama for scans, DeepSeek for briefs/escalated queries
+# - "local": Ollama for everything (free, lower quality)
+MEMORY_MODE=cloud
+
+# Enable token tracking and cost reporting
+ENABLE_TOKEN_TRACKING=true
+
+# Enable deepseek-v4-pro for complex queries (architecture, design, tradeoffs)
+# v4-pro is 3x more expensive than v4-flash (6x after May 31, 2026)
+# Recommended: keep false unless you need maximum reasoning
+ENABLE_DEEPSEEK_PRO=false
 ```
 
-> `OLLAMA_HOST` is optional. If your system has `OLLAMA_HOST=0.0.0.0` set (common on server installs), the server automatically corrects it to `http://127.0.0.1:11434` for client connections.
+> **Note:** `OLLAMA_HOST` is optional. If your system has `OLLAMA_HOST=0.0.0.0` set (common on server installs), the server automatically corrects it to `http://127.0.0.1:11434` for client connections.
 
-### 3. Pull a local Ollama model
+### 3. Pull a local Ollama model (for hybrid/local mode)
 
 ```bash
 ollama pull llama3.2
 ```
+
+> **Note:** Only required if using `MEMORY_MODE=hybrid` or `MEMORY_MODE=local`.
 
 ### 4. Verify the installation
 
@@ -201,6 +216,28 @@ Add to `.cursor/mcp.json`:
   }
 }
 ```
+
+### Claude Desktop
+
+Add to your Claude Desktop configuration file:
+
+**Windows:** `%APPDATA%\Claude\claude_desktop_config.json`  
+**macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "universal-brain": {
+      "command": "C:\\path\\to\\zerikai_memory\\venv\\Scripts\\python.exe",
+      "args": [
+        "C:\\path\\to\\zerikai_memory\\main.py"
+      ]
+    }
+  }
+}
+```
+
+*(On macOS/Linux, use forward slashes and the path to your venv's python: `/path/to/zerikai_memory/venv/bin/python`)*
 
 > The server starts **once** when the IDE loads and stays running. Tool calls are messages to that process — there is no restart per call.
 
@@ -265,7 +302,9 @@ Tell your assistant:
 "Scan the workspace."
 ```
 
-> **Self-Cleaning Sync:** The `scan_workspace` tool is idempotent. It uses deterministic hashing to overwrite existing file records. Additionally, it **automatically purges** any stale memories from your database if the corresponding files were deleted or added to `.memignore` since the last scan. Your memory always perfectly mirrors your codebase, without breaking the cache prefix.
+> **Self-Cleaning Sync:** The `scan_workspace` tool is idempotent. It uses deterministic hashing to overwrite existing file records. Additionally, it **automatically purges** any stale memories from your database if the corresponding files were deleted or added to `.memignore` since the last scan. Your memory always perfectly mirrors your codebase.
+> 
+> **Cache Protection:** Normal scans do NOT regenerate the project brief—this preserves your DeepSeek KV cache prefix for 10× cost savings. The brief is only generated on the first scan or when explicitly forced with `force_refresh_brief=True`.
 
 | You say | What happens |
 |---|---|
@@ -370,12 +409,17 @@ grep "ERROR" .brain/server.log
 | Tool | Description |
 |---|---|
 | `init_workspace(workspace_path)` | Prepares the workspace for its initial deep scan |
-| `scan_workspace(..., force_refresh_brief?)` | Syncs code to memory and auto-synthesizes the brief |
+| `scan_workspace(..., force_refresh_brief?)` | Syncs code to memory. Auto-generates brief on first scan only; use `force_refresh_brief=True` to regenerate |
 | `save_to_memory(content, workspace_path, category?, source_id?)` | Summarises and stores a single fact or decision |
 | `query_memory(user_query, workspace_path, category?, use_cloud?)` | Retrieves and synthesises an answer |
 | `list_memory(workspace_path, category?, limit?)` | Lists stored memories for a workspace |
 | `list_workspaces()` | Shows all known workspaces |
 | `update_brief(workspace_path, new_content)` | Replaces the project brief |
+| `get_brief(workspace_path)` | Retrieves the current project brief |
+| **`get_token_usage(workspace_path?, start_date?, end_date?)`** | **Returns DeepSeek API token usage and cost statistics** |
+| **`get_cache_stats(workspace_path?)`** | **Shows cache hit/miss rates by operation type** |
+| **`get_cost_report(workspace_path?, period?)`** | **Generates cost breakdown by operation ("today", "week", "month", "all")** |
+| **`purge_usage_data(before_date)`** | **Deletes token tracking records before specified date** |
 
 ---
 
@@ -410,7 +454,7 @@ Caching is automatic — no flags required. The server is structured to maximise
 * The **system message** = fixed role instruction + stable project brief (identical every call for the same workspace → cached after the first call)
 * The **user message** = retrieved context + query (changes every call → never cached, that's fine)
 
-A well-populated 600-token project brief means paying **\$0.028/M** instead of **\$0.28/M** on your largest token block — a 10× saving on every query after the first.
+A well-populated 600-token project brief means paying **\$0.0028/M** (cache hit) instead of **\$0.14/M** (cache miss) on your largest token block—a **50× saving** on every query after the first (v4-flash pricing).
 
 ---
 
