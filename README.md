@@ -54,12 +54,22 @@ To maximize these savings, you need to populate the Project Brief for each works
 
 ## How it works
 
+The server operates in one of three **Memory Modes** (configured in `.env`), allowing you to balance cost, privacy, and reasoning quality:
+
 ```
 Your IDE  ──►  MCP Server (main.py)  ──►  ChromaDB (.brain/vector_db/)
                      │                         ↑ semantic retrieval
-                     ├── Ollama (local)    ─── short / routine queries
-                     └── DeepSeek (cloud)  ─── architectural / long queries
+                     ├── Ollama (local)    ─── Used in Hybrid & Local modes
+                     └── DeepSeek (cloud)  ─── Used in Hybrid & Cloud modes
 ```
+
+### 🧠 Memory Modes
+
+| Mode | LLM Strategy | Best For |
+|---|---|---|
+| **`local`** | **Ollama** for everything | 100% Privacy & $0 cost. |
+| **`hybrid`** | **Ollama** (Scans/Routine) + **DeepSeek** (Architecture/Briefs) | **Best Balance.** Free local lookups, pro cloud reasoning. |
+| **`cloud`** | **DeepSeek** for everything | Maximum accuracy and project brief quality. |
 
 The server uses a **Workspace Registry** to manage projects. Each workspace is assigned a persistent UUID and a human-friendly display name.
 
@@ -73,41 +83,52 @@ The AI assistant automatically resolves your workspace identifier (UUID, short-I
 zerikai_memory/
 ├── .brain/                       # Created on first run — do NOT commit
 │   ├── server.log                # Rotating log file (5 MB cap)
-│   ├── token_usage.db            # SQLite database for DeepSeek token tracking
+│   ├── zerikai.db                # SQLite database for Registry & Token tracking
 │   ├── vector_db/                # ChromaDB — one sub-collection per workspace
 │   └── contexts/                 # Per-workspace project briefs
 ├── .env                          # API keys (never commit)
 ├── .memignore                    # Files to exclude from memory indexing
 ├── config.py                     # Configuration & routing thresholds
+├── drop_memory.py                # Cleanup utility (registry + vectors + files)
 ├── main.py                       # MCP server entry point
 └── requirements.txt
 ```
 
-> **Add `.brain/` and `.env` to your `.gitignore`.**
+### Security & Data Privacy
+
+To protect your sensitive credentials and local memory data, ensure your `.gitignore` includes the following:
+
+```gitignore
+.env       # Contains DEEPSEEK_API_KEY
+.brain/    # Contains local vector DB and project briefs
+```
+
+> **Warning:** Never commit your `.brain/` folder or `.env` file to version control.
 
 ---
 
 ## Project Brief Structure
 
-Each workspace gets an auto-generated project brief (`.brain/contexts/<workspace_id>.md`) with a **9-section structure** optimized for DeepSeek KV caching:
+Each workspace gets an auto-generated project brief (`.brain/contexts/<workspace_id>.md`) with an 8-section structure optimized for DeepSeek KV caching. These sections are synthesized automatically during a scan:
 
-1. **Overview** — Project purpose, key features, and target users
-2. **Technical Stack** — Backend, database, APIs, frontend, and libraries
-3. **Core Architecture** — System layers and component responsibilities
-4. **Primary Conventions** — Code organization, API docs, error handling, schema management
-5. **Purpose** — Project goals and success criteria
-6. **Key Scripts, Files & Directories** — Important entry points, scripts, configs, and directory structure
-7. **Development & Testing** — Setup, run commands, test framework, build process
-8. **Data Flow & Request Lifecycle** — Request processing, authentication, typical flow
-9. **Future Roadmap** — Planned features, TODOs, and architectural improvements
+1. **Overview** — High-level summary of [type], [purpose], and [domain].
+2. **Technical Stack** — Concise list of Backend, Database, API integrations, and Libraries.
+3. **Core Architecture** — Layered description (Frontend, Backend, Data/Processing layers).
+4. **Primary Conventions** — Organizational rules for code, docs, error handling, and schema.
+5. **Purpose** — In-depth explanation of the business problem solved and core objectives.
+6. **Key Files & Directories** — Curated list of entry points and routers with their specific purposes.
+7. **Development & Testing** — Verified instructions for setup, running, testing, and deployment.
+8. **Data Flow & Request Lifecycle** — Trace of a request from Entry Point through to the Data Layer.
+9. **Future Roadmap** — Planned features, architectural improvements, and TODOs extracted from code.
 
 **Benefits:**
-- **1000-1200 tokens** per brief → optimal cache stability
-- **10x cost savings** via DeepSeek cache hits (identical prefix across queries)
-- **Semantic search friendly** → accurate context retrieval
-- **Human-readable** → can be manually reviewed/edited
 
-The brief is synthesized using **DeepSeek v4-flash** with section-by-section generation (15 semantic search results per section) for accuracy.
+* **1000-1200 tokens** per brief → optimal cache stability.
+* **10x cost savings** via DeepSeek cache hits (identical prefix across queries).
+* **Semantic search friendly** → accurate context retrieval.
+* **Human-readable** → can be manually reviewed/edited.
+
+The brief is synthesized using **DeepSeek v4-flash** (or Ollama in local mode) with section-by-section generation (15 semantic search results per section) for accuracy.
 
 ---
 
@@ -223,7 +244,7 @@ Add to `.cursor/mcp.json`:
 
 Add to your Claude Desktop configuration file:
 
-**Windows:** `%APPDATA%\Claude\claude_desktop_config.json`  
+**Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
 **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 
 ```json
@@ -254,6 +275,7 @@ You never call tools directly. You speak to your AI assistant in natural languag
 You do not need to specify your project name or path in the chat. Your IDE (Antigravity/Cursor/VS Code) automatically attaches metadata about your currently active workspace (the folder you have open) to every message you send.
 
 The system uses a **Workspace Registry** to manage projects.
+
 1. The user (or IDE) runs `init_workspace(path)` only once to register the project.
 2. The AI assistant then uses the assigned **UUID** or **Display Name** for all subsequent tool calls.
 3. The MCP server identifies the correct context and isolation based on this identifier.
@@ -308,7 +330,7 @@ Tell your assistant:
 ```
 
 > **Self-Cleaning Sync:** The `scan_workspace` tool is idempotent. It uses deterministic hashing to overwrite existing file records. Additionally, it **automatically purges** any stale memories from your database if the corresponding files were deleted or added to `.memignore` since the last scan. Your memory always perfectly mirrors your codebase.
-> 
+>
 > **Cache Protection:** Normal scans do NOT regenerate the project brief—this preserves your DeepSeek KV cache prefix for 10× cost savings. The brief is only generated on the first scan or when explicitly forced with `force_refresh_brief=True`.
 
 | You say | What happens |
@@ -411,21 +433,29 @@ grep "ERROR" .brain/server.log
 
 ## Available MCP Tools
 
-| Tool | Description |
-|---|---|
-| `init_workspace(workspace_path)` | Registers a new workspace and scaffolds the brief template. |
-| `scan_workspace(workspace, category?, force_refresh_brief?)` | Syncs code to memory. Accepts UUID/name. |
-| `save_to_memory(content, workspace, category?, source_id?)` | Summarises and stores a single fact or decision. |
-| `query_memory(user_query, workspace, category?, use_cloud?)` | Retrieves and synthesises an answer. |
-| `list_memory(workspace, category?, limit?)` | Lists stored memories. |
-| `list_workspaces()` | Shows all registered workspaces with their UUIDs and names. |
-| `resolve_workspace(identifier)` | Maps a UUID/name to its physical path (helper for agents). |
-| `update_brief(workspace, new_content)` | Replaces the project brief. |
-| `get_brief(workspace)` | Retrieves the current project brief. |
-| `get_token_usage(workspace?, ...)`| Returns DeepSeek API token usage and cost statistics. |
-| `get_cache_stats(workspace?)` | Shows cache hit/miss rates by operation type. |
-| `get_cost_report(workspace?, period?)` | Generates cost breakdown by operation. |
-| `purge_usage_data(before_date)` | Deletes historical token tracking records. |
+### Workspace Management
+
+* **`init_workspace`**: Scaffolds a project brief file for a new workspace.
+* **`list_workspaces`**: Lists all known workspaces that have a brief or stored memories.
+* **`resolve_workspace`**: Resolves a workspace identifier (UUID or name) to its filesystem path.
+* **`merge_workspaces`**: Consolidates duplicate workspace IDs into one (irreversible).
+
+### Memory & Briefs
+
+* **`scan_workspace`**: Walks the directory and saves all readable text files to persistent memory.
+* **`save_to_memory`**: Manually saves architectural decisions, facts, or technical notes.
+* **`list_memory`**: Lists stored memories for a workspace, optionally filtered by category.
+* **`query_memory`**: Retrieves relevant context and synthesizes an answer via Ollama or DeepSeek.
+* **`get_brief`**: Retrieves the current project brief/architecture overview.
+* **`update_brief`**: Manually updates the markdown content of a project brief.
+
+### Usage & Diagnostics
+
+* **`get_token_usage`**: Returns DeepSeek API token usage and cost statistics.
+* **`get_cost_report`**: Generates a cost breakdown by operation.
+* **`get_cache_stats`**: Shows cache hit/miss rates by operation type.
+* **`purge_usage_data`**: Deletes historical token tracking records.
+* **`debug_workspace_id`**: Diagnostic tool to see what workspace ID would be generated from a path.
 
 ---
 
@@ -433,23 +463,25 @@ grep "ERROR" .brain/server.log
 
 ### Wiping Workspace Memory (`drop_memory.py`)
 
-If you misconfigured your `.memignore` or want to completely reset the AI's memory for a specific project, you can use the included `drop_memory.py` script. This script safely deletes the ChromaDB vector collection and the associated `.md` context file for a given workspace.
+If you misconfigured your `.memignore` or want to completely reset the AI's memory for a specific project, you can use the included `drop_memory.py` script. This script safely deletes the ChromaDB vector collection, the associated `.md` context file, and the workspace registry entry for a given workspace.
 
 **Scenario: Starting Fresh**
 You ran the initial scan on a new workspace, but realized the AI indexed a massive `logs/` directory because you forgot to add it to `.memignore`. Instead of dealing with duplicate embeddings or irrelevant context, you can wipe the workspace memory completely and start from scratch.
 
 **Usage:**
-Run the script from the root of `zerikai_memory`, passing the workspace ID you want to wipe:
+Run the script from the root of `zerikai_memory`, passing the **workspace name or UUID** you want to wipe:
 
 ```bash
 # Windows
-.\venv\Scripts\python.exe drop_memory.py the_workspace_id
+.\venv\Scripts\python.exe drop_memory.py "Workspace Name"
+# OR
+.\venv\Scripts\python.exe drop_memory.py workspace-uuid
 
 # macOS / Linux
-venv/bin/python drop_memory.py the_workspace_id
+venv/bin/python drop_memory.py "Workspace Name"
 ```
 
-*(You can find the workspace ID by asking your AI assistant "What workspaces do you know about?" or by checking the `.brain/contexts/` folder).*
+*(You can find the workspace name or ID by using the `list_workspaces` tool or by checking the `.brain/contexts/` folder).*
 
 ---
 

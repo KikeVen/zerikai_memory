@@ -11,6 +11,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from uuid import uuid4
 
+import tiktoken
 from chromadb import PersistentClient
 from mcp.server.fastmcp import FastMCP
 from ollama import Client
@@ -96,10 +97,10 @@ def _init_db():
     """Initialize SQLite database for token tracking and workspace registry."""
     if not ENABLE_TOKEN_TRACKING:
         return
-    
+
     conn = sqlite3.connect(str(ZERIKAI_DB), timeout=10)
     conn.execute("PRAGMA journal_mode=WAL")  # allows concurrent reads during writes
-    
+
     # Create token tracking table
     conn.execute("""
         CREATE TABLE IF NOT EXISTS token_usage (
@@ -115,7 +116,7 @@ def _init_db():
             estimated_cost_usd REAL NOT NULL
         )
     """)
-    
+
     # Migrate existing table: add estimated_cost_usd column if missing
     cursor = conn.cursor()
     cursor.execute("PRAGMA table_info(token_usage)")
@@ -123,16 +124,16 @@ def _init_db():
     if "estimated_cost_usd" not in columns:
         log.info("Migrating token_usage table: adding estimated_cost_usd column")
         conn.execute("ALTER TABLE token_usage ADD COLUMN estimated_cost_usd REAL DEFAULT 0.0")
-    
+
     conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_workspace_timestamp 
+        CREATE INDEX IF NOT EXISTS idx_workspace_timestamp
         ON token_usage(workspace_id, timestamp)
     """)
     conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_timestamp 
+        CREATE INDEX IF NOT EXISTS idx_timestamp
         ON token_usage(timestamp)
     """)
-    
+
     # Create workspace registry table
     conn.execute("""
         CREATE TABLE IF NOT EXISTS workspace_registry (
@@ -144,12 +145,12 @@ def _init_db():
             last_brief_update TEXT
         )
     """)
-    
+
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_workspace_path
         ON workspace_registry(workspace_path)
     """)
-    
+
     conn.commit()
     conn.close()
 
@@ -162,7 +163,7 @@ def _track_token_usage(
 ):
     """
     Records DeepSeek API token usage to SQLite.
-    
+
     Args:
         workspace_id: The workspace identifier
         operation: Type of operation (query, brief_synthesis, etc.)
@@ -171,25 +172,25 @@ def _track_token_usage(
     """
     if not ENABLE_TOKEN_TRACKING or not usage:
         return
-    
+
     try:
         # Extract token counts
         prompt_tokens = getattr(usage, "prompt_tokens", 0)
         completion_tokens = getattr(usage, "completion_tokens", 0)
         cache_hit = getattr(usage, "prompt_cache_hit_tokens", 0)
         cache_miss = getattr(usage, "prompt_cache_miss_tokens", 0)
-        
+
         # Determine pricing tier
         model_key = "v4-pro" if "pro" in model.lower() else "v4-flash"
         pricing = DEEPSEEK_PRICING.get(model_key, DEEPSEEK_PRICING["v4-flash"])
-        
+
         # Calculate cost: cache hits + cache misses + output
         cost = (
             (cache_hit / 1_000_000) * pricing["cache_hit"] +
             (cache_miss / 1_000_000) * pricing["input"] +
             (completion_tokens / 1_000_000) * pricing["output"]
         )
-        
+
         # Store in database
         with sqlite3.connect(str(ZERIKAI_DB), timeout=10) as conn:
             conn.execute("""
@@ -209,12 +210,12 @@ def _track_token_usage(
                 cache_miss,
                 cost,
             ))
-        
+
         log.info(
             "Token tracking | workspace=%s | operation=%s | cost=$%.6f",
             workspace_id, operation, cost,
         )
-        
+
     except Exception as exc:
         log.error("Token tracking failed: %s", exc)
 
@@ -230,66 +231,66 @@ _init_db()
 def _derive_workspace_id(workspace_path: str) -> tuple[str, str]:
     """
     Derives a stable workspace UUID from a filesystem path.
-    
+
     Returns a tuple of (workspace_uuid, display_name).
-    
+
     The UUID is generated once per unique normalized path and stored in the workspace_registry
     table within zerikai.db. Subsequent calls with the same path (even with different formatting,
     case, or trailing slashes) return the same UUID.
-    
+
     Display name is derived from the folder name and used for human-readable output.
-    
+
     Args:
         workspace_path: Filesystem path to the workspace
-        
+
     Returns:
         tuple: (workspace_uuid, display_name)
-        
+
     Example:
         >>> _derive_workspace_id("/home/user/projects/my-app")
         ('a3f8c2d1-5e9f-4b7a-9c8d-1e2f3a4b5c6d', 'my_app')
     """
     if not workspace_path:
         return ("default", "default")
-    
+
     # Aggressive normalization to prevent duplicate workspace IDs due to:
     # - Case differences (d:\ vs D:\)
     # - Separator differences (/ vs \)
     # - Relative vs absolute paths
     # - Trailing slashes
     # - Symlinks/junctions (on Windows)
-    
+
     # Step 1: Strip trailing slashes/backslashes
     workspace_path = workspace_path.rstrip('/\\')
-    
+
     # Step 2: Convert to absolute path using os.path.abspath
     if not os.path.isabs(workspace_path):
         workspace_path = os.path.abspath(workspace_path)
-    
+
     # Step 3: Normalize path separators and case
     # os.path.normcase handles platform-specific case-sensitivity correctly
     normalized_path = os.path.normcase(os.path.normpath(workspace_path))
-    
+
     # Step 4: Use forward slashes as canonical separator
     normalized_path = normalized_path.replace('\\', '/')
-    
+
     # Step 5: Extract folder name for display name
     folder_name = os.path.basename(normalized_path)
     display_name = re.sub(r"[^a-z0-9]+", "_", folder_name.lower()).strip("_")
-    
+
     # Step 6: Look up or create workspace registry entry
     try:
         conn = sqlite3.connect(str(ZERIKAI_DB), timeout=10)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        
+
         # Try to find existing workspace by normalized path
         cursor.execute(
             "SELECT workspace_uuid, display_name FROM workspace_registry WHERE workspace_path = ?",
             (normalized_path,)
         )
         row = cursor.fetchone()
-        
+
         if row:
             # Existing workspace found
             workspace_uuid = row["workspace_uuid"]
@@ -299,24 +300,24 @@ def _derive_workspace_id(workspace_path: str) -> tuple[str, str]:
                 f"Workspace ID lookup: '{workspace_path}' → '{normalized_path}' → {workspace_uuid} ({stored_display_name})"
             )
             return (workspace_uuid, stored_display_name)
-        
+
         # No existing workspace - create new UUID and register it
         workspace_uuid = str(uuid4())
         created_at = datetime.utcnow().isoformat()
-        
+
         cursor.execute("""
             INSERT INTO workspace_registry (workspace_uuid, workspace_path, display_name, created_at)
             VALUES (?, ?, ?, ?)
         """, (workspace_uuid, normalized_path, display_name, created_at))
-        
+
         conn.commit()
         conn.close()
-        
+
         log.info(
             f"New workspace registered: '{workspace_path}' → '{normalized_path}' → {workspace_uuid} ({display_name})"
         )
         return (workspace_uuid, display_name)
-        
+
     except Exception as exc:
         log.error(f"Workspace ID derivation failed for '{workspace_path}': {exc}")
         # Fallback: generate ephemeral UUID (won't persist, but allows operation to continue)
@@ -326,13 +327,13 @@ def _derive_workspace_id(workspace_path: str) -> tuple[str, str]:
 def _resolve_workspace(identifier: str) -> tuple[str, str, str]:
     """
     Resolves a workspace identifier (UUID, short UUID, or display name) to its details.
-    
+
     Args:
         identifier: Full UUID, short UUID (first 8+ chars), or display name
-        
+
     Returns:
         tuple: (workspace_uuid, display_name, workspace_path)
-        
+
     Raises:
         ValueError: If no workspace matches the identifier
     """
@@ -340,14 +341,14 @@ def _resolve_workspace(identifier: str) -> tuple[str, str, str]:
         conn = sqlite3.connect(str(ZERIKAI_DB), timeout=10)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        
+
         # Try exact UUID match
         cursor.execute(
             "SELECT workspace_uuid, display_name, workspace_path FROM workspace_registry WHERE workspace_uuid = ?",
             (identifier,)
         )
         row = cursor.fetchone()
-        
+
         # Try short UUID match (first 8+ chars)
         if not row and len(identifier) >= 8:
             cursor.execute(
@@ -355,7 +356,7 @@ def _resolve_workspace(identifier: str) -> tuple[str, str, str]:
                 (f"{identifier}%",)
             )
             row = cursor.fetchone()
-        
+
         # Try display name match
         if not row:
             cursor.execute(
@@ -363,17 +364,17 @@ def _resolve_workspace(identifier: str) -> tuple[str, str, str]:
                 (identifier,)
             )
             row = cursor.fetchone()
-        
+
         conn.close()
-        
+
         if not row:
             raise ValueError(
                 f"No workspace found matching '{identifier}'. "
                 f"Run `list_workspaces` to see available workspaces."
             )
-        
+
         return (row["workspace_uuid"], row["display_name"], row["workspace_path"])
-        
+
     except Exception as exc:
         if isinstance(exc, ValueError):
             raise
@@ -386,18 +387,18 @@ UNINITIALIZED_MARKER = "<!-- ZERIKAI_PENDING_SYNTHESIS -->"
 async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud: bool = False) -> str:
     """
     Generates a comprehensive project brief using iterative section-by-section synthesis.
-    
+
     Instead of overwhelming the model with 50 summaries at once, this approach:
     1. Queries the vector DB with section-specific semantic searches
     2. Feeds only relevant context (10-15 results) to the model per section
     3. Uses simple, direct prompts like the original approach
     4. Builds the brief incrementally, one section at a time
-    
+
     This dramatically improves output quality for small local models by:
     - Reducing context window pressure
     - Providing focused, relevant information per section
     - Using clear, straightforward instructions
-    
+
     Args:
         workspace_id: The workspace UUID (for collection access)
         display_name: Human-readable project name (for brief title and prompts)
@@ -406,13 +407,13 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
     """
     log.info("_synthesize_deep_brief | Starting iterative synthesis for %s (%s)", display_name, workspace_id)
     collection = _get_collection(workspace_id)
-    
+
     # Check if we have any codebase data at all
     with _db_lock:
         check = collection.get(where={"category": "codebase"}, limit=1)
     if not check.get("documents"):
         return f"# Project Brief: {display_name}\n\nNo codebase files found during scan."
-    
+
     # Section definitions with semantic queries and format-guided prompts
     sections = [
         {
@@ -437,13 +438,14 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
             "prompt_template": (
                 f"You are a senior software architect analyzing the `{display_name}` project. "
                 "Based on the following file summaries from the codebase, list the Technical Stack. "
-                "Be concise and direct. Do not preface your answer with any introductory sentence. "
-                "Only list third-party libraries explicitly found in dependency files (requirements.txt, package.json, pyproject.toml, etc.). "
-                "Do not include standard library modules or internal framework utilities.\n\n"
-                "Use this format:\n"
+                "Be concise and direct. Do not preface your answer with any introductory sentence.\n\n"
+                "IMPORTANT: Only list the 5-10 most important PRIMARY dependencies. "
+                "Omit transitive dependencies (e.g., certifi, charset-normalizer, idna, etc.), "
+                "low-level utilities, and standard library modules. "
+                "Focus on frameworks, databases, and major integrations that define the project's architecture.\n\n"
+                "Use this format (listing only primary libraries, max 5):\n\n"
                 "* **Backend:** [Language/Framework]\n"
                 "* **Database:** [Database Technology]\n"
-                "* **Workflow Management:** [Platform/Tool if any]\n"
                 "* **API Integration:** [External services and what they do]\n"
                 "* **Frontend:** [UI Framework/Technology]\n"
                 "* **Libraries:**\n"
@@ -461,7 +463,7 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
                 "Based on the following file summaries from the codebase, describe the Core Architecture. "
                 "Be concise and direct. Start directly with 'The application consists of the following layers:' — no other introductory text.\n\n"
                 "Use this format:\n"
-                "The application consists of the following layers:\n"
+                "The application consists of the following layers:\n\n"
                 "1. **Frontend:** [Technology and what it handles]\n"
                 "2. **Backend:** [Framework and what it handles]\n"
                 "3. **[Other Layer]:** [Technology and what it handles]\n\n"
@@ -544,7 +546,7 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
                 "Based on the following file summaries from the codebase, describe the Data Flow & Request Lifecycle. "
                 "Be concise and direct. Start directly with 'A typical request flows through:' — no other introductory text.\n\n"
                 "Use this format:\n"
-                "A typical request flows through:\n"
+                "A typical request flows through:\n\n"
                 "1. **[Entry Point]:** [What happens first]\n"
                 "2. **[Processing Layer]:** [How request is processed]\n"
                 "3. **[Data Layer]:** [How data is accessed/modified]\n"
@@ -555,13 +557,32 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
                 "Describe Data Flow & Request Lifecycle:"
             ),
         },
+        {
+            "heading": "## Future Roadmap",
+            "query": "todo future roadmap planned features upcoming improvements milestones backlog scaling roadmap",
+            "prompt_template": (
+                f"You are a senior software architect analyzing the `{display_name}` project. "
+                "Based on the following file summaries from the codebase (look for TODOs, FIXME, comments about future changes, documented roadmaps, or explicit plans), "
+                "describe the Future Roadmap. "
+                "Be concise and direct. Start directly with the first planned item or milestone — no introductory text.\n\n"
+                "Use this format:\n"
+                "1. **Phase/Feature Title:** [Description of planned improvement]\n"
+                "2. **[Next Title]:** [Description...]\n\n"
+                "IMPORTANT: If no clear future plans, TODOs, or roadmap items are found in the code or documentation, "
+                "respond ONLY with: 'No future roadmap specified in the codebase.'\n\n"
+                "DO NOT suggest or infer plans. Only report what is explicitly documented.\n\n"
+                "=== CODEBASE SUMMARIES ===\n"
+                "{context}\n\n"
+                "Describe the Future Roadmap:"
+            ),
+        },
     ]
-    
+
     brief_parts = [f"# Project Brief: {display_name}\n"]
-    
+
     for section in sections:
         log.info("_synthesize_deep_brief | Generating: %s", section["heading"])
-        
+
         # Semantic search for section-specific context
         with _db_lock:
             results = collection.query(
@@ -569,7 +590,7 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
                 n_results=15,
                 where={"category": "codebase"},
             )
-        
+
         docs = results.get("documents", [[]])[0]
         metas = results.get("metadatas", [[]])[0]
         if not docs:
@@ -589,7 +610,7 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
             context_parts.append(f"{header}{doc}")
         context = "\n\n".join(context_parts)
         prompt = section["prompt_template"].format(context=context)
-        
+
         try:
             if use_cloud:
                 # Use DeepSeek for high-quality synthesis
@@ -604,7 +625,7 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
                     max_tokens=2048,
                 )
                 section_content = response.choices[0].message.content.strip()
-                
+
                 # Track token usage for brief synthesis
                 usage = getattr(response, "usage", None)
                 if usage:
@@ -618,13 +639,13 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
                     options={"temperature": 0},
                 )
                 section_content = result["response"].strip()
-            
+
             brief_parts.append(f"\n{section['heading']}\n\n{section_content}\n")
             log.info("_synthesize_deep_brief | ✓ %s complete", section["heading"])
         except Exception as exc:
             log.error("_synthesize_deep_brief | Failed on %s: %s", section["heading"], exc)
             brief_parts.append(f"\n{section['heading']}\n\n(Section generation failed: {exc})\n")
-    
+
     final_brief = "".join(brief_parts)
     log.info("_synthesize_deep_brief | Complete for %s", workspace_id)
     return final_brief
@@ -673,11 +694,13 @@ def _build_system_message(workspace_id: str) -> str:
     always identical, at minimum the role instruction hits the cache on
     every second+ call. Once section 2 is also stable (i.e. the brief
     doesn't change between calls), the entire system message prefix is
-    cached — covering your largest token block at the 10x cheaper rate.
+    cached — covering your largest token block at the cheaper cache hit rate.
 
-    Minimum 64 tokens required for a cache unit. A well-populated project
-    brief (stack, conventions, architecture decisions) easily reaches
-    500–1000 tokens, making cache savings substantial.
+    Per https://api-docs.deepseek.com/guides/kv_cache, the cache system:
+    - Works on a "best-effort" basis (no 100% hit guarantee)
+    - Detects common prefixes across requests automatically
+    - Persists cache units at request boundaries and fixed token intervals
+    - Builds caches in seconds; unused caches expire in hours to days
     """
     role_instruction = (
         "You are a project memory assistant. "
@@ -688,7 +711,21 @@ def _build_system_message(workspace_id: str) -> str:
         "=== PROJECT BRIEF ===\n"
     )
     project_context = _load_project_context(workspace_id)
-    return role_instruction + project_context
+    full_message = role_instruction + project_context
+
+    # Per https://api-docs.deepseek.com/guides/kv_cache:
+    # - Cache persists at request boundaries and detects common prefixes automatically
+    # - Prefix matching works from token 0
+    # - Cache units are created at fixed intervals for long inputs
+    # - No explicit minimum length requirement; cache works on "best-effort" basis
+    try:
+        enc = tiktoken.get_encoding("cl100k_base")
+        token_count = len(enc.encode(full_message))
+        log.debug("_build_system_message | System message: %d tokens", token_count)
+    except Exception as exc:
+        log.warning("_build_system_message | Token count failed: %s", exc)
+
+    return full_message
 
 
 # ---------------------------------------------------------------------------
@@ -824,7 +861,7 @@ async def init_workspace(workspace_path: str) -> str:
 
     template = f"{UNINITIALIZED_MARKER}\n# Project Brief — {display_name}\n\n(Waiting for initial scan... run `scan_workspace` to auto-generate the architecture brief)"
     context_file.write_text(template, encoding="utf-8")
-    
+
     return (
         f"Workspace registered: `{display_name}`\n"
         f"Workspace ID: `{workspace_id[:8]}`\n\n"
@@ -873,7 +910,7 @@ async def save_to_memory(
                 max_tokens=150,
             )
             summary = response.choices[0].message.content.strip()
-            
+
             # Track token usage
             usage = getattr(response, "usage", None)
             if usage:
@@ -1047,7 +1084,7 @@ async def _query_deepseek(context: str, user_query: str, workspace_id: str) -> s
             "DeepSeek cache | workspace=%s | model=%s | hit=%d | miss=%d | hit_rate=%d%%",
             workspace_id, model, hit, miss, hit_pct,
         )
-        
+
         # Track token usage to SQLite
         _track_token_usage(workspace_id, "query", model, usage)
 
@@ -1136,12 +1173,12 @@ async def list_workspaces() -> str:
         workspace_ids = {f.stem for f in briefs} | {
             c.replace("memory_", "") for c in collections if c.startswith("memory_")
         }
-        
+
         # Query workspace registry for display names
         conn = sqlite3.connect(str(ZERIKAI_DB), timeout=10)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        
+
         # Build lookup map of UUID -> display_name
         uuid_to_name = {}
         for wid in workspace_ids:
@@ -1152,21 +1189,21 @@ async def list_workspaces() -> str:
             else:
                 # Fallback for old workspaces not in registry yet
                 uuid_to_name[wid] = wid
-        
+
         conn.close()
-        
+
         lines = ["Known workspaces:\n"]
         for wid in sorted(workspace_ids, key=lambda w: uuid_to_name.get(w, w)):
             has_brief      = (context_dir / f"{wid}.md").exists()
             has_collection = f"memory_{wid}" in collections
             display_name = uuid_to_name.get(wid, wid)
-            
+
             # Show display name with short UUID hint if it's a UUID
             if len(wid) > 16 and "-" in wid:  # Likely a UUID
                 id_display = f"{display_name} ({wid[:8]})"
             else:
                 id_display = display_name
-            
+
             lines.append(
                 f"  {id_display}  "
                 f"[brief={'Y' if has_brief else 'N'}]  "
@@ -1188,16 +1225,16 @@ async def list_workspaces() -> str:
 async def resolve_workspace(identifier: str) -> str:
     """
     Resolves a workspace identifier (UUID, short UUID, or display name) to its filesystem path.
-    
+
     This is a helper tool for agents that don't have filesystem context. Use `list_workspaces`
     to see available workspaces, then use this tool to get the path needed for other operations.
-    
+
     Args:
         identifier: Workspace UUID (full or first 8 chars), or display name
-        
+
     Returns:
         The absolute filesystem path to use with other workspace tools
-        
+
     Example:
         resolve_workspace("b2e5077c") → "d:/users/kike/projects/zerikai_memory"
         resolve_workspace("zerikai_memory") → "d:/users/kike/projects/zerikai_memory"
@@ -1206,14 +1243,14 @@ async def resolve_workspace(identifier: str) -> str:
         conn = sqlite3.connect(str(ZERIKAI_DB), timeout=10)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        
+
         # Try exact UUID match first
         cursor.execute(
             "SELECT workspace_uuid, display_name, workspace_path FROM workspace_registry WHERE workspace_uuid = ?",
             (identifier,)
         )
         row = cursor.fetchone()
-        
+
         # Try short UUID match (first 8 chars)
         if not row and len(identifier) >= 8:
             cursor.execute(
@@ -1221,7 +1258,7 @@ async def resolve_workspace(identifier: str) -> str:
                 (f"{identifier}%",)
             )
             row = cursor.fetchone()
-        
+
         # Try display name match
         if not row:
             cursor.execute(
@@ -1229,15 +1266,15 @@ async def resolve_workspace(identifier: str) -> str:
                 (identifier,)
             )
             row = cursor.fetchone()
-        
+
         conn.close()
-        
+
         if not row:
             return (
                 f"No workspace found matching '{identifier}'.\n"
                 f"Run `list_workspaces` to see available workspaces."
             )
-        
+
         return (
             f"Workspace: {row['display_name']}\n"
             f"UUID: {row['workspace_uuid']}\n"
@@ -1246,7 +1283,7 @@ async def resolve_workspace(identifier: str) -> str:
             f'  query_memory(workspace_path="{row["workspace_path"]}", ...)\n'
             f'  scan_workspace(workspace_path="{row["workspace_path"]}", ...)'
         )
-        
+
     except Exception as exc:
         log.error("resolve_workspace failed: %s", exc)
         return f"ERROR: Could not resolve workspace — {exc}"
@@ -1259,9 +1296,9 @@ async def resolve_workspace(identifier: str) -> str:
 @mcp.tool()
 async def update_brief(workspace: str, new_content: str) -> str:
     """
-    Updates the project brief for a workspace. 
+    Updates the project brief for a workspace.
     Use this to keep the project context current as the architecture evolves.
-    
+
     Args:
         workspace:   Workspace identifier (UUID, short UUID, or display name).
         new_content: The full markdown content for the new brief.
@@ -1270,7 +1307,7 @@ async def update_brief(workspace: str, new_content: str) -> str:
         workspace_id, display_name, _ = _resolve_workspace(workspace)
         context_dir = Path(DB_PATH) / "contexts"
         context_file = context_dir / f"{workspace_id}.md"
-        
+
         context_file.write_text(new_content, encoding="utf-8")
         return f"Brief updated for workspace `{display_name}`."
     except Exception as exc:
@@ -1287,7 +1324,7 @@ async def get_brief(workspace: str) -> str:
     """
     Retrieves the current project brief for a workspace.
     Use this to review the synthesized project context and architecture overview.
-    
+
     Args:
         workspace: Workspace identifier (UUID, short UUID, or display name).
     """
@@ -1295,13 +1332,13 @@ async def get_brief(workspace: str) -> str:
         workspace_id, display_name, workspace_path = _resolve_workspace(workspace)
         context_dir = Path(DB_PATH) / "contexts"
         context_file = context_dir / f"{workspace_id}.md"
-        
+
         if not context_file.exists():
             return (
                 f"No brief found for workspace `{display_name}`.\n"
                 f"Run `init_workspace` followed by `scan_workspace` to generate one."
             )
-        
+
         brief_content = context_file.read_text(encoding="utf-8")
         return brief_content
     except Exception as exc:
@@ -1326,7 +1363,7 @@ async def scan_workspace(
 
     Idempotent and Self-Cleaning:
     - Overwrites existing files with deterministic IDs.
-    - Automatically purges memories from this category that are no longer 
+    - Automatically purges memories from this category that are no longer
       present or are now ignored.
 
     Args:
@@ -1350,7 +1387,7 @@ async def scan_workspace(
     with _db_lock:
         existing = collection.get(where={"category": category})
         old_ids = set(existing.get("ids", []))
-    
+
     scanned_ids = set()
     saved   = 0
     skipped = 0
@@ -1393,11 +1430,11 @@ async def scan_workspace(
                 category=category,
                 source_id=rel_path,
             )
-            
+
             # Record that this ID is still valid
             doc_id = hashlib.md5(f"{workspace_id}:{rel_path}".encode()).hexdigest()
             scanned_ids.add(doc_id)
-            
+
             saved += 1
             log.info("scan_workspace | saved: %s", rel_path)
 
@@ -1415,12 +1452,12 @@ async def scan_workspace(
     # Brief Synthesis Logic
     context_dir = Path(DB_PATH) / "contexts"
     context_file = context_dir / f"{workspace_id}.md"
-    
+
     brief_synthesized = False
     if context_file.exists():
         current_text = context_file.read_text(encoding="utf-8", errors="ignore")
         needs_synthesis = force_refresh_brief or (UNINITIALIZED_MARKER in current_text)
-        
+
         if needs_synthesis:
             log.info("scan_workspace | triggering deep brief synthesis for %s", display_name)
             new_brief = await _synthesize_deep_brief(workspace_id, display_name, use_cloud=SYNTHESIZE_WITH_CLOUD)
@@ -1462,7 +1499,7 @@ async def get_token_usage(
 ) -> str:
     """
     Returns DeepSeek API token usage and cost statistics.
-    
+
     Args:
         workspace:  Optional workspace identifier (UUID, short UUID, or display name). If None, shows all workspaces.
         start_date: Optional ISO date string (YYYY-MM-DD) for filtering. Defaults to beginning of time.
@@ -1470,35 +1507,35 @@ async def get_token_usage(
     """
     if not ENABLE_TOKEN_TRACKING:
         return "Token tracking is disabled. Set ENABLE_TOKEN_TRACKING=true in config to enable."
-    
+
     try:
         conn = sqlite3.connect(str(ZERIKAI_DB))
         conn.row_factory = sqlite3.Row
-        
+
         # Build query with optional filters
         conditions = []
         params = []
         workspace_display_name = None
-        
+
         if workspace:
             workspace_id, workspace_display_name, _ = _resolve_workspace(workspace)
             conditions.append("workspace_id = ?")
             params.append(workspace_id)
-        
+
         if start_date:
             conditions.append("timestamp >= ?")
             params.append(f"{start_date}T00:00:00")
-        
+
         if end_date:
             conditions.append("timestamp < ?")
             # Add 1 day to include the entire end_date
             end_dt = datetime.fromisoformat(end_date) + timedelta(days=1)
             params.append(end_dt.isoformat())
-        
+
         where_clause = " AND ".join(conditions) if conditions else "1=1"
-        
+
         query = f"""
-            SELECT 
+            SELECT
                 COUNT(*) as call_count,
                 SUM(prompt_tokens) as total_prompt_tokens,
                 SUM(completion_tokens) as total_completion_tokens,
@@ -1508,16 +1545,16 @@ async def get_token_usage(
             FROM token_usage
             WHERE {where_clause}
         """
-        
+
         result = conn.execute(query, params).fetchone()
         conn.close()
-        
+
         if not result or result["call_count"] == 0:
             return "No token usage data found for the specified criteria."
-        
+
         total_cache = result["total_cache_hits"] + result["total_cache_misses"]
         cache_hit_rate = (result["total_cache_hits"] / total_cache * 100) if total_cache > 0 else 0
-        
+
         scope = f"Workspace: {workspace_display_name}" if workspace_display_name else "All Workspaces"
         date_range = []
         if start_date:
@@ -1525,7 +1562,7 @@ async def get_token_usage(
         if end_date:
             date_range.append(f"to {end_date}")
         date_info = " ".join(date_range) if date_range else "all time"
-        
+
         return (
             f"Token Usage Report\n"
             f"{scope} ({date_info})\n\n"
@@ -1537,7 +1574,7 @@ async def get_token_usage(
             f"Cache Hit Rate: {cache_hit_rate:.1f}%\n"
             f"Total Cost: ${result['total_cost']:.4f} USD"
         )
-        
+
     except Exception as exc:
         log.error("get_token_usage failed: %s", exc)
         return f"ERROR: Could not retrieve token usage — {exc}"
@@ -1551,56 +1588,56 @@ async def get_token_usage(
 async def get_cache_stats(workspace: str | None = None) -> str:
     """
     Shows cache hit/miss rates by operation type.
-    
+
     Args:
         workspace: Optional workspace identifier (UUID, short UUID, or display name). If None, shows all workspaces.
     """
     if not ENABLE_TOKEN_TRACKING:
         return "Token tracking is disabled. Set ENABLE_TOKEN_TRACKING=true in config to enable."
-    
+
     try:
         conn = sqlite3.connect(str(ZERIKAI_DB))
         conn.row_factory = sqlite3.Row
-        
+
         conditions = []
         params = []
         workspace_display_name = None
-        
+
         if workspace:
             workspace_id, workspace_display_name, _ = _resolve_workspace(workspace)
             conditions.append("workspace_id = ?")
             params.append(workspace_id)
-        
+
         where_clause = " AND ".join(conditions) if conditions else "1=1"
-        
+
         query = f"""
-            SELECT 
+            SELECT
                 operation,
                 COUNT(*) as call_count,
                 SUM(cache_hit_tokens) as total_hits,
                 SUM(cache_miss_tokens) as total_misses,
-                AVG(CAST(cache_hit_tokens AS FLOAT) / 
+                AVG(CAST(cache_hit_tokens AS FLOAT) /
                     (cache_hit_tokens + cache_miss_tokens) * 100) as avg_hit_rate
             FROM token_usage
             WHERE {where_clause}
             GROUP BY operation
             ORDER BY call_count DESC
         """
-        
+
         results = conn.execute(query, params).fetchall()
         conn.close()
-        
+
         if not results:
             return "No cache statistics available."
-        
+
         scope = f"Workspace: {workspace_display_name}" if workspace_display_name else "All Workspaces"
-        
+
         lines = [
             f"Cache Statistics\n{scope}\n",
             f"{'Operation':<20} {'Calls':<8} {'Hit Rate':<12} {'Hits':<12} {'Misses':<12}",
             "-" * 70,
         ]
-        
+
         for row in results:
             hit_rate = row["avg_hit_rate"] if row["avg_hit_rate"] else 0
             lines.append(
@@ -1610,9 +1647,9 @@ async def get_cache_stats(workspace: str | None = None) -> str:
                 f"{row['total_hits']:>10,}  "
                 f"{row['total_misses']:>10,}"
             )
-        
+
         return "\n".join(lines)
-        
+
     except Exception as exc:
         log.error("get_cache_stats failed: %s", exc)
         return f"ERROR: Could not retrieve cache stats — {exc}"
@@ -1629,46 +1666,46 @@ async def get_cost_report(
 ) -> str:
     """
     Generates cost breakdown by operation.
-    
+
     Args:
         workspace: Optional workspace identifier (UUID, short UUID, or display name). If None, shows all workspaces.
         period:    Time period filter: "today", "week", "month", or "all" (default).
     """
     if not ENABLE_TOKEN_TRACKING:
         return "Token tracking is disabled. Set ENABLE_TOKEN_TRACKING=true in config to enable."
-    
+
     try:
         conn = sqlite3.connect(str(ZERIKAI_DB))
         conn.row_factory = sqlite3.Row
-        
+
         # Calculate date range based on period
         now = datetime.utcnow()
         start_date = None
-        
+
         if period == "today":
             start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
         elif period == "week":
             start_date = now - timedelta(days=7)
         elif period == "month":
             start_date = now - timedelta(days=30)
-        
+
         conditions = []
         params = []
         workspace_display_name = None
-        
+
         if workspace:
             workspace_id, workspace_display_name, _ = _resolve_workspace(workspace)
             conditions.append("workspace_id = ?")
             params.append(workspace_id)
-        
+
         if start_date:
             conditions.append("timestamp >= ?")
             params.append(start_date.isoformat())
-        
+
         where_clause = " AND ".join(conditions) if conditions else "1=1"
-        
+
         query = f"""
-            SELECT 
+            SELECT
                 operation,
                 model,
                 COUNT(*) as call_count,
@@ -1679,33 +1716,33 @@ async def get_cost_report(
             GROUP BY operation, model
             ORDER BY total_cost DESC
         """
-        
+
         results = conn.execute(query, params).fetchall()
-        
+
         # Get overall totals
         total_query = f"""
-            SELECT 
+            SELECT
                 COUNT(*) as total_calls,
                 SUM(estimated_cost_usd) as grand_total
             FROM token_usage
             WHERE {where_clause}
         """
-        
+
         totals = conn.execute(total_query, params).fetchone()
         conn.close()
-        
+
         if not results:
             return "No cost data available for the specified criteria."
-        
+
         scope = f"Workspace: {workspace_display_name}" if workspace_display_name else "All Workspaces"
         period_label = period.capitalize() if period != "all" else "All Time"
-        
+
         lines = [
             f"Cost Report\n{scope} — {period_label}\n",
             f"{'Operation':<20} {'Model':<20} {'Calls':<8} {'Total Cost':<15} {'Avg/Call'}",
             "-" * 85,
         ]
-        
+
         for row in results:
             lines.append(
                 f"{row['operation']:<20} "
@@ -1714,16 +1751,16 @@ async def get_cost_report(
                 f"${row['total_cost']:>10.4f}     "
                 f"${row['avg_cost_per_call']:>8.6f}"
             )
-        
+
         lines.append("-" * 85)
         lines.append(
             f"{'TOTAL':<20} {'':<20} "
             f"{totals['total_calls']:<8} "
             f"${totals['grand_total']:>10.4f}"
         )
-        
+
         return "\n".join(lines)
-        
+
     except Exception as exc:
         log.error("get_cost_report failed: %s", exc)
         return f"ERROR: Could not generate cost report — {exc}"
@@ -1738,35 +1775,35 @@ async def purge_usage_data(before_date: str) -> str:
     """
     Deletes token tracking records before the specified date.
     Use for cleaning up historical data. Cannot be undone.
-    
+
     Args:
         before_date: ISO date string (YYYY-MM-DD). Records before this date will be deleted.
     """
     if not ENABLE_TOKEN_TRACKING:
         return "Token tracking is disabled. Set ENABLE_TOKEN_TRACKING=true in config to enable."
-    
+
     try:
         # Validate date format
         datetime.fromisoformat(before_date)
-        
+
         conn = sqlite3.connect(str(ZERIKAI_DB))
-        
+
         # Count records to be deleted
         count_query = "SELECT COUNT(*) as count FROM token_usage WHERE timestamp < ?"
         count = conn.execute(count_query, (f"{before_date}T00:00:00",)).fetchone()[0]
-        
+
         if count == 0:
             conn.close()
             return f"No records found before {before_date}."
-        
+
         # Delete records
         conn.execute("DELETE FROM token_usage WHERE timestamp < ?", (f"{before_date}T00:00:00",))
         conn.commit()
         conn.close()
-        
+
         log.info("Purged %d token usage records before %s", count, before_date)
         return f"Successfully deleted {count} token usage records before {before_date}."
-        
+
     except ValueError:
         return f"ERROR: Invalid date format '{before_date}'. Use YYYY-MM-DD format."
     except Exception as exc:
@@ -1779,25 +1816,25 @@ async def debug_workspace_id(test_path: str) -> str:
     """
     Diagnostic tool: Shows what workspace ID would be generated from a given path.
     Useful for debugging path normalization issues.
-    
+
     Args:
         test_path: The workspace path to test
     """
     try:
         # Show the normalized path used for hashing (matches _derive_workspace_id logic)
         test_path_stripped = test_path.rstrip('/\\')
-        
+
         # Convert to absolute if needed
         if not os.path.isabs(test_path_stripped):
             test_path_stripped = os.path.abspath(test_path_stripped)
-        
+
         # Normalize using os.path.normcase (respects platform case-sensitivity)
         normalized_path = os.path.normcase(os.path.normpath(test_path_stripped))
         normalized_path = normalized_path.replace('\\', '/')
-        
+
         # Get the actual workspace UUID and display name
         workspace_uuid, display_name = _derive_workspace_id(test_path)
-        
+
         return (
             f"Test path: {test_path}\n"
             f"Normalized: {normalized_path}\n"
@@ -1814,40 +1851,40 @@ async def merge_workspaces(source_workspace_id: str, target_workspace_id: str) -
     """
     Merge all data from source workspace into target workspace.
     This consolidates duplicate workspace IDs that were created due to path variations.
-    
+
     WARNING: This moves briefs, memory, and embeddings from source to target and then
     deletes the source workspace. Cannot be undone.
-    
+
     Args:
         source_workspace_id: The workspace ID to merge FROM (will be deleted after merge)
         target_workspace_id: The workspace ID to merge INTO (will receive all data)
     """
     try:
         client = PersistentClient(path=str(DB_PATH))
-        
+
         # Check if both workspaces exist
         all_collections = {c.name for c in client.list_collections()}
-        
+
         if source_workspace_id not in all_collections:
             return f"ERROR: Source workspace '{source_workspace_id}' not found."
-        
+
         if target_workspace_id not in all_collections:
             return f"ERROR: Target workspace '{target_workspace_id}' not found."
-        
+
         if source_workspace_id == target_workspace_id:
             return "ERROR: Source and target workspace IDs must be different."
-        
+
         source_col = client.get_collection(source_workspace_id)
         target_col = client.get_collection(target_workspace_id)
-        
+
         # Get all data from source
         source_data = source_col.get(include=["metadatas", "documents", "embeddings"])
-        
+
         if not source_data["ids"]:
             log.info("Source workspace '%s' is empty, deleting it", source_workspace_id)
             client.delete_collection(source_workspace_id)
             return f"Source workspace '{source_workspace_id}' was empty and has been deleted."
-        
+
         # Add all source data to target
         # Note: If there are ID conflicts, this will overwrite the target data
         target_col.upsert(
@@ -1856,10 +1893,10 @@ async def merge_workspaces(source_workspace_id: str, target_workspace_id: str) -
             metadatas=source_data["metadatas"],
             embeddings=source_data["embeddings"] if source_data["embeddings"] else None
         )
-        
+
         # Delete source workspace
         client.delete_collection(source_workspace_id)
-        
+
         count = len(source_data["ids"])
         log.info(
             "Merged %d items from workspace '%s' into '%s'",
@@ -1869,7 +1906,7 @@ async def merge_workspaces(source_workspace_id: str, target_workspace_id: str) -
             f"Successfully merged {count} items from '{source_workspace_id}' "
             f"into '{target_workspace_id}'. Source workspace deleted."
         )
-        
+
     except Exception as exc:
         log.error("merge_workspaces failed: %s", exc)
         return f"ERROR: Could not merge workspaces — {exc}"
