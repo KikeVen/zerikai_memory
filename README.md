@@ -61,7 +61,9 @@ Your IDE  ──►  MCP Server (main.py)  ──►  ChromaDB (.brain/vector_db
                      └── DeepSeek (cloud)  ─── architectural / long queries
 ```
 
-One server process handles **multiple projects simultaneously**. Each project gets its own isolated ChromaDB collection and project brief, keyed by workspace path.
+The server uses a **Workspace Registry** to manage projects. Each workspace is assigned a persistent UUID and a human-friendly display name.
+
+The AI assistant automatically resolves your workspace identifier (UUID, short-ID, or name) so you never have to pass complex file paths manually for routine queries.
 
 ---
 
@@ -251,7 +253,10 @@ You never call tools directly. You speak to your AI assistant in natural languag
 
 You do not need to specify your project name or path in the chat. Your IDE (Antigravity/Cursor/VS Code) automatically attaches metadata about your currently active workspace (the folder you have open) to every message you send.
 
-The AI assistant reads this hidden metadata and automatically passes the exact `workspace_path` to the MCP tools. The MCP server then securely hashes this path to completely isolate your project's memory from all others.
+The system uses a **Workspace Registry** to manage projects.
+1. The user (or IDE) runs `init_workspace(path)` only once to register the project.
+2. The AI assistant then uses the assigned **UUID** or **Display Name** for all subsequent tool calls.
+3. The MCP server identifies the correct context and isolation based on this identifier.
 
 ### First-time setup for a new project
 
@@ -408,18 +413,19 @@ grep "ERROR" .brain/server.log
 
 | Tool | Description |
 |---|---|
-| `init_workspace(workspace_path)` | Prepares the workspace for its initial deep scan |
-| `scan_workspace(..., force_refresh_brief?)` | Syncs code to memory. Auto-generates brief on first scan only; use `force_refresh_brief=True` to regenerate |
-| `save_to_memory(content, workspace_path, category?, source_id?)` | Summarises and stores a single fact or decision |
-| `query_memory(user_query, workspace_path, category?, use_cloud?)` | Retrieves and synthesises an answer |
-| `list_memory(workspace_path, category?, limit?)` | Lists stored memories for a workspace |
-| `list_workspaces()` | Shows all known workspaces |
-| `update_brief(workspace_path, new_content)` | Replaces the project brief |
-| `get_brief(workspace_path)` | Retrieves the current project brief |
-| **`get_token_usage(workspace_path?, start_date?, end_date?)`** | **Returns DeepSeek API token usage and cost statistics** |
-| **`get_cache_stats(workspace_path?)`** | **Shows cache hit/miss rates by operation type** |
-| **`get_cost_report(workspace_path?, period?)`** | **Generates cost breakdown by operation ("today", "week", "month", "all")** |
-| **`purge_usage_data(before_date)`** | **Deletes token tracking records before specified date** |
+| `init_workspace(workspace_path)` | Registers a new workspace and scaffolds the brief template. |
+| `scan_workspace(workspace, category?, force_refresh_brief?)` | Syncs code to memory. Accepts UUID/name. |
+| `save_to_memory(content, workspace, category?, source_id?)` | Summarises and stores a single fact or decision. |
+| `query_memory(user_query, workspace, category?, use_cloud?)` | Retrieves and synthesises an answer. |
+| `list_memory(workspace, category?, limit?)` | Lists stored memories. |
+| `list_workspaces()` | Shows all registered workspaces with their UUIDs and names. |
+| `resolve_workspace(identifier)` | Maps a UUID/name to its physical path (helper for agents). |
+| `update_brief(workspace, new_content)` | Replaces the project brief. |
+| `get_brief(workspace)` | Retrieves the current project brief. |
+| `get_token_usage(workspace?, ...)`| Returns DeepSeek API token usage and cost statistics. |
+| `get_cache_stats(workspace?)` | Shows cache hit/miss rates by operation type. |
+| `get_cost_report(workspace?, period?)` | Generates cost breakdown by operation. |
+| `purge_usage_data(before_date)` | Deletes historical token tracking records. |
 
 ---
 

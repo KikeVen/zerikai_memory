@@ -1389,7 +1389,7 @@ async def scan_workspace(
 
             await save_to_memory(
                 content=labelled,
-                workspace_path=workspace_path,
+                workspace=workspace_id,
                 category=category,
                 source_id=rel_path,
             )
