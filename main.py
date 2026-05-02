@@ -99,7 +99,8 @@ def _init_db():
         return
 
     conn = sqlite3.connect(str(ZERIKAI_DB), timeout=10)
-    conn.execute("PRAGMA journal_mode=WAL")  # allows concurrent reads during writes
+    # allows concurrent reads during writes
+    conn.execute("PRAGMA journal_mode=WAL")
 
     # Create token tracking table
     conn.execute("""
@@ -123,7 +124,8 @@ def _init_db():
     columns = [row[1] for row in cursor.fetchall()]
     if "estimated_cost_usd" not in columns:
         log.info("Migrating token_usage table: adding estimated_cost_usd column")
-        conn.execute("ALTER TABLE token_usage ADD COLUMN estimated_cost_usd REAL DEFAULT 0.0")
+        conn.execute(
+            "ALTER TABLE token_usage ADD COLUMN estimated_cost_usd REAL DEFAULT 0.0")
 
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_workspace_timestamp
@@ -319,7 +321,8 @@ def _derive_workspace_id(workspace_path: str) -> tuple[str, str]:
         return (workspace_uuid, display_name)
 
     except Exception as exc:
-        log.error(f"Workspace ID derivation failed for '{workspace_path}': {exc}")
+        log.error(
+            f"Workspace ID derivation failed for '{workspace_path}': {exc}")
         # Fallback: generate ephemeral UUID (won't persist, but allows operation to continue)
         return (str(uuid4()), display_name)
 
@@ -384,6 +387,7 @@ def _resolve_workspace(identifier: str) -> tuple[str, str, str]:
 
 UNINITIALIZED_MARKER = "<!-- ZERIKAI_PENDING_SYNTHESIS -->"
 
+
 async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud: bool = False) -> str:
     """
     Generates a comprehensive project brief using iterative section-by-section synthesis.
@@ -405,7 +409,8 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
         use_cloud: If True, uses DeepSeek for higher quality (small cost).
                    If False, uses Ollama (free, may include noise).
     """
-    log.info("_synthesize_deep_brief | Starting iterative synthesis for %s (%s)", display_name, workspace_id)
+    log.info("_synthesize_deep_brief | Starting iterative synthesis for %s (%s)",
+             display_name, workspace_id)
     collection = _get_collection(workspace_id)
 
     # Check if we have any codebase data at all
@@ -438,12 +443,13 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
             "prompt_template": (
                 f"You are a senior software architect analyzing the `{display_name}` project. "
                 "Based on the following file summaries from the codebase, list the Technical Stack. "
-                "Be concise and direct. Do not preface your answer with any introductory sentence.\n\n"
+                "Be concise and direct. Start directly with 'Listing only primary libraries, max 5:' — no other introductory text.\n\n"
+                # "Be concise and direct. Do not preface your answer with any introductory sentence.\n\n"
                 "IMPORTANT: Only list the 5-10 most important PRIMARY dependencies. "
                 "Omit transitive dependencies (e.g., certifi, charset-normalizer, idna, etc.), "
                 "low-level utilities, and standard library modules. "
                 "Focus on frameworks, databases, and major integrations that define the project's architecture.\n\n"
-                "Use this format (listing only primary libraries, max 5):\n\n"
+                # "Use this format (listing only primary libraries, max 5):\n\n"
                 "* **Backend:** [Language/Framework]\n"
                 "* **Database:** [Database Technology]\n"
                 "* **API Integration:** [External services and what they do]\n"
@@ -596,7 +602,8 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
         if not docs:
             # Fallback: grab any available context
             with _db_lock:
-                fallback = collection.get(where={"category": "codebase"}, limit=15)
+                fallback = collection.get(
+                    where={"category": "codebase"}, limit=15)
             docs = fallback.get("documents", [])
             metas = fallback.get("metadatas", [])
 
@@ -618,7 +625,8 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
                     ds_client.chat.completions.create,
                     model=DEEPSEEK_MODEL_FAST,
                     messages=[
-                        {"role": "system", "content": "You are a senior software architect."},
+                        {"role": "system",
+                            "content": "You are a senior software architect."},
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0,
@@ -629,7 +637,8 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
                 # Track token usage for brief synthesis
                 usage = getattr(response, "usage", None)
                 if usage:
-                    _track_token_usage(workspace_id, "brief_synthesis", DEEPSEEK_MODEL_FAST, usage)
+                    _track_token_usage(
+                        workspace_id, "brief_synthesis", DEEPSEEK_MODEL_FAST, usage)
             else:
                 # Use Ollama for free local synthesis
                 result = await asyncio.to_thread(
@@ -640,11 +649,15 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
                 )
                 section_content = result["response"].strip()
 
-            brief_parts.append(f"\n{section['heading']}\n\n{section_content}\n")
-            log.info("_synthesize_deep_brief | ✓ %s complete", section["heading"])
+            brief_parts.append(
+                f"\n{section['heading']}\n\n{section_content}\n")
+            log.info("_synthesize_deep_brief | ✓ %s complete",
+                     section["heading"])
         except Exception as exc:
-            log.error("_synthesize_deep_brief | Failed on %s: %s", section["heading"], exc)
-            brief_parts.append(f"\n{section['heading']}\n\n(Section generation failed: {exc})\n")
+            log.error("_synthesize_deep_brief | Failed on %s: %s",
+                      section["heading"], exc)
+            brief_parts.append(
+                f"\n{section['heading']}\n\n(Section generation failed: {exc})\n")
 
     final_brief = "".join(brief_parts)
     log.info("_synthesize_deep_brief | Complete for %s", workspace_id)
@@ -823,7 +836,8 @@ def _select_model(user_query: str) -> str:
     Within cloud mode, selects fast vs pro model.
     Pro is reserved for queries that explicitly signal deep reasoning need.
     """
-    pro_triggers = {"architect", "architecture", "design", "tradeoff", "trade-off", "audit"}
+    pro_triggers = {"architect", "architecture",
+                    "design", "tradeoff", "trade-off", "audit"}
     if any(w in pro_triggers for w in user_query.lower().split()):
         log.info("Model → deepseek-v4-pro (reasoning query)")
         return DEEPSEEK_MODEL_PRO
@@ -892,7 +906,8 @@ async def save_to_memory(
         source_id: Optional unique identifier (like a file path) to prevent duplicates on re-scans.
     """
     try:
-        workspace_id, display_name, workspace_path = _resolve_workspace(workspace)
+        workspace_id, display_name, workspace_path = _resolve_workspace(
+            workspace)
 
         # File scanning: use cloud ONLY in "cloud" mode, not "hybrid"
         # "hybrid" mode uses Ollama for scanning, DeepSeek for briefs/queries
@@ -914,7 +929,8 @@ async def save_to_memory(
             # Track token usage
             usage = getattr(response, "usage", None)
             if usage:
-                _track_token_usage(workspace_id, "file_scan", DEEPSEEK_MODEL_FAST, usage)
+                _track_token_usage(workspace_id, "file_scan",
+                                   DEEPSEEK_MODEL_FAST, usage)
         else:
             # Use Ollama for "hybrid" and "local" modes
             result = await asyncio.to_thread(
@@ -929,7 +945,8 @@ async def save_to_memory(
 
         # Use a deterministic ID if source_id is provided so re-scans overwrite instead of duplicate
         if source_id:
-            doc_id = hashlib.md5(f"{workspace_id}:{source_id}".encode()).hexdigest()
+            doc_id = hashlib.md5(
+                f"{workspace_id}:{source_id}".encode()).hexdigest()
         else:
             doc_id = str(uuid4())
 
@@ -984,7 +1001,8 @@ async def query_memory(
                     None = auto-route (recommended).
     """
     try:
-        workspace_id, display_name, workspace_path = _resolve_workspace(workspace)
+        workspace_id, display_name, workspace_path = _resolve_workspace(
+            workspace)
         collection = _get_collection(workspace_id)
 
         # 1. Semantic retrieval — scoped to this workspace's collection
@@ -995,12 +1013,13 @@ async def query_memory(
             where=where,
             include=["documents", "distances"],
         )
-        docs      = results.get("documents", [[]])[0]
+        docs = results.get("documents", [[]])[0]
         distances = results.get("distances", [[]])[0]
 
         # Hard stop — nothing retrieved at all
         if not docs:
-            log.info("query_memory | no documents retrieved for workspace=%s query=%r", workspace_id, user_query)
+            log.info("query_memory | no documents retrieved for workspace=%s query=%r",
+                     workspace_id, user_query)
             return (
                 f"No memories found in workspace `{workspace_id}` for this query.\n"
                 "Run `scan_workspace` to index the codebase, or `save_to_memory` to store context manually."
@@ -1009,7 +1028,8 @@ async def query_memory(
         # Distance threshold — ChromaDB returns L2 distances; filter out results
         # that are too dissimilar. Tune via QUERY_DISTANCE_THRESHOLD in .env.
         # (0 = identical, higher = less similar; >1.5 is typically noise)
-        relevant = [(doc, dist) for doc, dist in zip(docs, distances) if dist <= QUERY_DISTANCE_THRESHOLD]
+        relevant = [(doc, dist) for doc, dist in zip(
+            docs, distances) if dist <= QUERY_DISTANCE_THRESHOLD]
 
         if not relevant:
             best = min(distances)
@@ -1076,7 +1096,7 @@ async def _query_deepseek(context: str, user_query: str, workspace_id: str) -> s
     # Log cache performance — watch this to verify prefix stability is working
     usage = getattr(response, "usage", None)
     if usage:
-        hit  = getattr(usage, "prompt_cache_hit_tokens",  0)
+        hit = getattr(usage, "prompt_cache_hit_tokens",  0)
         miss = getattr(usage, "prompt_cache_miss_tokens", 0)
         total = hit + miss
         hit_pct = round(hit / total * 100) if total else 0
@@ -1131,7 +1151,7 @@ async def list_memory(
         where = {"category": category} if category else None
         results = collection.get(where=where, limit=limit)
 
-        docs  = results.get("documents", [])
+        docs = results.get("documents", [])
         metas = results.get("metadatas", [])
 
         if not docs:
@@ -1182,7 +1202,8 @@ async def list_workspaces() -> str:
         # Build lookup map of UUID -> display_name
         uuid_to_name = {}
         for wid in workspace_ids:
-            cursor.execute("SELECT display_name FROM workspace_registry WHERE workspace_uuid = ?", (wid,))
+            cursor.execute(
+                "SELECT display_name FROM workspace_registry WHERE workspace_uuid = ?", (wid,))
             row = cursor.fetchone()
             if row:
                 uuid_to_name[wid] = row["display_name"]
@@ -1194,7 +1215,7 @@ async def list_workspaces() -> str:
 
         lines = ["Known workspaces:\n"]
         for wid in sorted(workspace_ids, key=lambda w: uuid_to_name.get(w, w)):
-            has_brief      = (context_dir / f"{wid}.md").exists()
+            has_brief = (context_dir / f"{wid}.md").exists()
             has_collection = f"memory_{wid}" in collections
             display_name = uuid_to_name.get(wid, wid)
 
@@ -1329,7 +1350,8 @@ async def get_brief(workspace: str) -> str:
         workspace: Workspace identifier (UUID, short UUID, or display name).
     """
     try:
-        workspace_id, display_name, workspace_path = _resolve_workspace(workspace)
+        workspace_id, display_name, workspace_path = _resolve_workspace(
+            workspace)
         context_dir = Path(DB_PATH) / "contexts"
         context_file = context_dir / f"{workspace_id}.md"
 
@@ -1344,7 +1366,6 @@ async def get_brief(workspace: str) -> str:
     except Exception as exc:
         log.error("get_brief failed: %s", exc)
         return f"ERROR: Could not retrieve brief — {exc}"
-
 
 
 # ---------------------------------------------------------------------------
@@ -1389,9 +1410,9 @@ async def scan_workspace(
         old_ids = set(existing.get("ids", []))
 
     scanned_ids = set()
-    saved   = 0
+    saved = 0
     skipped = 0
-    errors  = 0
+    errors = 0
 
     for file_path in sorted(workspace_root.rglob("*")):
         # Skip directories themselves
@@ -1432,7 +1453,8 @@ async def scan_workspace(
             )
 
             # Record that this ID is still valid
-            doc_id = hashlib.md5(f"{workspace_id}:{rel_path}".encode()).hexdigest()
+            doc_id = hashlib.md5(
+                f"{workspace_id}:{rel_path}".encode()).hexdigest()
             scanned_ids.add(doc_id)
 
             saved += 1
@@ -1447,7 +1469,8 @@ async def scan_workspace(
     if stale_ids:
         with _db_lock:
             collection.delete(ids=stale_ids)
-        log.info("scan_workspace | purged %d stale memories for %s", len(stale_ids), workspace_id)
+        log.info("scan_workspace | purged %d stale memories for %s",
+                 len(stale_ids), workspace_id)
 
     # Brief Synthesis Logic
     context_dir = Path(DB_PATH) / "contexts"
@@ -1455,18 +1478,22 @@ async def scan_workspace(
 
     brief_synthesized = False
     if context_file.exists():
-        current_text = context_file.read_text(encoding="utf-8", errors="ignore")
-        needs_synthesis = force_refresh_brief or (UNINITIALIZED_MARKER in current_text)
+        current_text = context_file.read_text(
+            encoding="utf-8", errors="ignore")
+        needs_synthesis = force_refresh_brief or (
+            UNINITIALIZED_MARKER in current_text)
 
         if needs_synthesis:
-            log.info("scan_workspace | triggering deep brief synthesis for %s", display_name)
+            log.info(
+                "scan_workspace | triggering deep brief synthesis for %s", display_name)
             new_brief = await _synthesize_deep_brief(workspace_id, display_name, use_cloud=SYNTHESIZE_WITH_CLOUD)
             context_file.write_text(new_brief, encoding="utf-8")
             brief_synthesized = True
     else:
         # First scan - auto-generate the brief if we have any data
         if saved > 0:
-            log.info("scan_workspace | first scan detected, auto-generating brief for %s", display_name)
+            log.info(
+                "scan_workspace | first scan detected, auto-generating brief for %s", display_name)
             new_brief = await _synthesize_deep_brief(workspace_id, display_name, use_cloud=SYNTHESIZE_WITH_CLOUD)
             context_dir.mkdir(parents=True, exist_ok=True)
             context_file.write_text(new_brief, encoding="utf-8")
@@ -1518,7 +1545,8 @@ async def get_token_usage(
         workspace_display_name = None
 
         if workspace:
-            workspace_id, workspace_display_name, _ = _resolve_workspace(workspace)
+            workspace_id, workspace_display_name, _ = _resolve_workspace(
+                workspace)
             conditions.append("workspace_id = ?")
             params.append(workspace_id)
 
@@ -1553,7 +1581,8 @@ async def get_token_usage(
             return "No token usage data found for the specified criteria."
 
         total_cache = result["total_cache_hits"] + result["total_cache_misses"]
-        cache_hit_rate = (result["total_cache_hits"] / total_cache * 100) if total_cache > 0 else 0
+        cache_hit_rate = (result["total_cache_hits"] /
+                          total_cache * 100) if total_cache > 0 else 0
 
         scope = f"Workspace: {workspace_display_name}" if workspace_display_name else "All Workspaces"
         date_range = []
@@ -1604,7 +1633,8 @@ async def get_cache_stats(workspace: str | None = None) -> str:
         workspace_display_name = None
 
         if workspace:
-            workspace_id, workspace_display_name, _ = _resolve_workspace(workspace)
+            workspace_id, workspace_display_name, _ = _resolve_workspace(
+                workspace)
             conditions.append("workspace_id = ?")
             params.append(workspace_id)
 
@@ -1694,7 +1724,8 @@ async def get_cost_report(
         workspace_display_name = None
 
         if workspace:
-            workspace_id, workspace_display_name, _ = _resolve_workspace(workspace)
+            workspace_id, workspace_display_name, _ = _resolve_workspace(
+                workspace)
             conditions.append("workspace_id = ?")
             params.append(workspace_id)
 
@@ -1790,14 +1821,16 @@ async def purge_usage_data(before_date: str) -> str:
 
         # Count records to be deleted
         count_query = "SELECT COUNT(*) as count FROM token_usage WHERE timestamp < ?"
-        count = conn.execute(count_query, (f"{before_date}T00:00:00",)).fetchone()[0]
+        count = conn.execute(
+            count_query, (f"{before_date}T00:00:00",)).fetchone()[0]
 
         if count == 0:
             conn.close()
             return f"No records found before {before_date}."
 
         # Delete records
-        conn.execute("DELETE FROM token_usage WHERE timestamp < ?", (f"{before_date}T00:00:00",))
+        conn.execute("DELETE FROM token_usage WHERE timestamp < ?",
+                     (f"{before_date}T00:00:00",))
         conn.commit()
         conn.close()
 
@@ -1829,7 +1862,8 @@ async def debug_workspace_id(test_path: str) -> str:
             test_path_stripped = os.path.abspath(test_path_stripped)
 
         # Normalize using os.path.normcase (respects platform case-sensitivity)
-        normalized_path = os.path.normcase(os.path.normpath(test_path_stripped))
+        normalized_path = os.path.normcase(
+            os.path.normpath(test_path_stripped))
         normalized_path = normalized_path.replace('\\', '/')
 
         # Get the actual workspace UUID and display name
@@ -1878,10 +1912,12 @@ async def merge_workspaces(source_workspace_id: str, target_workspace_id: str) -
         target_col = client.get_collection(target_workspace_id)
 
         # Get all data from source
-        source_data = source_col.get(include=["metadatas", "documents", "embeddings"])
+        source_data = source_col.get(
+            include=["metadatas", "documents", "embeddings"])
 
         if not source_data["ids"]:
-            log.info("Source workspace '%s' is empty, deleting it", source_workspace_id)
+            log.info("Source workspace '%s' is empty, deleting it",
+                     source_workspace_id)
             client.delete_collection(source_workspace_id)
             return f"Source workspace '{source_workspace_id}' was empty and has been deleted."
 
