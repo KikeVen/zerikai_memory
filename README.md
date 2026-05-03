@@ -625,6 +625,8 @@ All memory data and API keys stay on your machine.
 
 The assistant calls `merge_workspaces`. This is **irreversible**; the source workspace is deleted after the merge.
 
+visit [zerikai for more](http://zerikai.com)
+
 ---
 
 ## Notice
