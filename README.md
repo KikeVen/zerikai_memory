@@ -23,7 +23,7 @@ A standalone local-only Python MCP server that gives any IDE persistent, workspa
 15. [DeepSeek KV Cache Optimisation](#deepseek-kv-cache-optimisation)
 16. [Security & Data Privacy](#security--data-privacy)
 17. [Troubleshooting](#troubleshooting)
-18. [Disclaimer](#disclaimer)
+18. [Notice](#notice)
 
 ---
 
@@ -627,9 +627,9 @@ The assistant calls `merge_workspaces`. This is **irreversible**; the source wor
 
 ---
 
-## Disclaimer
+## Notice
 
-This tool interacts directly with your local file system, vector databases, and LLM APIs. While every effort has been made to ensure safety, including strict workspace isolation and deterministic hashing, Zerikai is not responsible for any data loss, corruption, API charges, or unintended consequences resulting from the use of this software. Always maintain standard backups or version control for your codebase before scanning or dropping memory.
+>This project is provided "as-is" for personal use/reference. I am not accepting Pull Requests or code contributions at this time. AI-generated PRs will be closed and users may be blocked.
 
 ---
 
