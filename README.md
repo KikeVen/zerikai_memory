@@ -185,6 +185,8 @@ ENABLE_DEEPSEEK_PRO=false
 
 ### 3. Pull a local Ollama model (for hybrid/local mode)
 
+Download and install the [Ollama](https://ollama.com) version for your operating system. Once installed and running, open your terminal and run:
+
 ```bash
 ollama pull llama3.2
 ```
@@ -192,6 +194,8 @@ ollama pull llama3.2
 > **Note:** Only required if using `MEMORY_MODE=hybrid` or `MEMORY_MODE=local`.
 
 ### 4. Verify the installation
+
+Open a new terminal in your IDE, ensure your virtual environment is activated (from Step 1), and run:
 
 ```bash
 python -c "from main import scan_workspace, query_memory; print('OK')"
@@ -276,7 +280,8 @@ You do not need to specify your project name or path in the chat. Your IDE (Anti
 
 The system uses a **Workspace Registry** to manage projects.
 
-1. The user (or IDE) runs `init_workspace(path)` only once to register the project.
+1. The user (or IDE) runs `init_workspace(path)` to register the project.
+   - **Note:** In a practical sense, it means that `init_workspace` acts as a "Get or Create" command. This tool is idempotent—running it multiple times is safe and will simply return the existing registration.
 2. The AI assistant then uses the assigned **UUID** or **Display Name** for all subsequent tool calls.
 3. The MCP server identifies the correct context and isolation based on this identifier.
 
@@ -303,9 +308,9 @@ Then tell your assistant:
 The assistant calls `scan_workspace`. This triggers the **Post-Scan Auto-Briefing**:
 
 1. It walks the directory and saves summaries of every readable file to the vector database.
-2. Once the scan is complete, it reads the top 50 file summaries.
-3. It feeds those summaries to Ollama to **synthesize a definitive, highly-accurate Project Brief**.
-4. The brief is saved to the `.md` file, and the file is **locked** to protect your DeepSeek Cache.
+2. The server then performs an **iterative synthesis**, querying the memory for 15 relevant results for each of the 9 project brief sections.
+3. It uses the auto-router (DeepSeek by default in Hybrid/Cloud modes) to **synthesize a definitive, highly-accurate Project Brief**.
+4. The brief is saved to the `.md` file, and the synthesis marker is removed, effectively **locking** the brief to protect your DeepSeek KV cache.
 
 > **Cache Stability Policy:** To ensure your DeepSeek KV cache prefix stays identical (which gives you the 10x cost savings), the system will **never** overwrite your Project Brief during normal daily scans. It is only generated on the very first scan.
 
@@ -422,6 +427,8 @@ grep "ERROR" .brain/server.log
 
 ### What is logged
 
+All server activity is recorded in **`.brain/server.log`** (located in the project root). The server uses a rotating file handler to track architectural decisions, retrieval performance, and operational errors, providing essential transparency into model routing and cache efficiency.
+
 | Event | Level |
 |---|---|
 | Server startup (DB path, model, mode) | `INFO` |
@@ -437,7 +444,7 @@ grep "ERROR" .brain/server.log
 
 ### Workspace Management
 
-* **`init_workspace`**: Scaffolds a project brief file for a new workspace.
+* **`init_workspace`**: Scaffolds a project brief file for a new workspace (idempotent "Get or Create" command).
 * **`list_workspaces`**: Lists all known workspaces that have a brief or stored memories.
 * **`resolve_workspace`**: Resolves a workspace identifier (UUID or name) to its filesystem path.
 * **`merge_workspaces`**: Consolidates duplicate workspace IDs into one (irreversible).
