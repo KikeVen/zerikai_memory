@@ -82,7 +82,7 @@ Standard LLM calls re-process your entire project brief on every query. DeepSeek
 
 ### 2. Ollama-First Auto-Routing (70–80% Free Queries)
 
-The auto-router acts as a financial gatekeeper:
+On `hybrid` mode, the auto-router acts as a financial gatekeeper:
 
 - **Routine queries** (e.g., "What was the naming convention for our API routes?") → handled by **Ollama** at \$0.
 - **Escalation** only occurs for complex queries (40+ words) or architectural keywords (`refactor`, `design`, `migration`, `audit`…).
