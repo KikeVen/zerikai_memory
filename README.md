@@ -2,6 +2,8 @@
 
 A standalone local-only Python MCP server that gives any IDE persistent, workspace-isolated memory. Combines ChromaDB (local vector store), Ollama (free local summarisation), and DeepSeek (cloud synthesis) with automatic cost-aware routing.
 
+![memory](zerikai_memory.png)
+
 ---
 
 ## Table of Contents
