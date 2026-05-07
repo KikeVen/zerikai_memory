@@ -1195,44 +1195,37 @@ async def query_memory(
         docs = results.get("documents", [[]])[0]
         distances = results.get("distances", [[]])[0]
 
-        # Hard stop — nothing retrieved at all
+        # Check if anything was retrieved
         if not docs:
             log.info("query_memory | no documents retrieved for workspace=%s query=%r",
                      workspace_id, user_query)
-            return (
-                f"No memories found in workspace `{workspace_id}` for this query.\n"
-                "Run `scan_workspace` to index the codebase, or `save_to_memory` to store context manually."
-            )
+            context = "No specific code snippets found in memory."
+        else:
+            # Distance threshold — ChromaDB returns L2 distances; filter out results
+            # that are too dissimilar. Tune via QUERY_DISTANCE_THRESHOLD in .env.
+            # (0 = identical, higher = less similar; >1.5 is typically noise)
+            relevant = [(doc, dist) for doc, dist in zip(
+                docs, distances) if dist <= QUERY_DISTANCE_THRESHOLD]
 
-        # Distance threshold — ChromaDB returns L2 distances; filter out results
-        # that are too dissimilar. Tune via QUERY_DISTANCE_THRESHOLD in .env.
-        # (0 = identical, higher = less similar; >1.5 is typically noise)
-        relevant = [(doc, dist) for doc, dist in zip(
-            docs, distances) if dist <= QUERY_DISTANCE_THRESHOLD]
-
-        if not relevant:
-            best = min(distances)
-            log.info(
-                "query_memory | no results below threshold (best dist=%.3f) workspace=%s query=%r",
-                best, workspace_id, user_query,
-            )
-            return (
-                f"I don't know — nothing relevant found in `{workspace_id}` memory for this query "
-                f"(closest match distance: {best:.2f}, threshold: {QUERY_DISTANCE_THRESHOLD}).\n"
-                "Try rephrasing, or run `scan_workspace` to ensure the codebase is indexed."
-            )
-
-        log.info(
-            "query_memory | %d/%d results passed threshold for workspace=%s",
-            len(relevant), len(docs), workspace_id,
-        )
-        context = "\n".join(doc for doc, _ in relevant)
+            if not relevant:
+                best = min(distances)
+                log.info(
+                    "query_memory | no results below threshold (best dist=%.3f) workspace=%s query=%r",
+                    best, workspace_id, user_query,
+                )
+                context = "No specific code snippets found below distance threshold."
+            else:
+                log.info(
+                    "query_memory | %d/%d results passed threshold for workspace=%s",
+                    len(relevant), len(docs), workspace_id,
+                )
+                context = "\n".join(doc for doc, _ in relevant)
 
         # 2. Route and synthesise
         if _should_use_cloud(user_query, use_cloud):
             return await _query_deepseek(context, user_query, workspace_id)
         else:
-            return await _query_ollama(context, user_query)
+            return await _query_ollama(context, user_query, workspace_id)
 
     except Exception as exc:
         log.error("query_memory failed: %s", exc)
@@ -1290,10 +1283,12 @@ async def _query_deepseek(context: str, user_query: str, workspace_id: str) -> s
     return response.choices[0].message.content
 
 
-async def _query_ollama(context: str, user_query: str) -> str:
+async def _query_ollama(context: str, user_query: str, workspace_id: str) -> str:
     """Local synthesis via Ollama — zero cost, zero latency on warm model."""
+    brief = _load_project_context(workspace_id)
     prompt = (
-        f"Project context:\n{context}\n\n"
+        f"Project Brief:\n{brief}\n\n"
+        f"Retrieved Context:\n{context}\n\n"
         f"Query: {user_query}\n\n"
         "Answer concisely and technically:"
     )
