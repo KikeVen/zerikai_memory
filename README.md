@@ -90,13 +90,13 @@ On `hybrid` mode, the auto-router acts as a financial gatekeeper:
 - **Escalation** only occurs for complex queries (40+ words) or architectural keywords (`refactor`, `design`, `migration`, `audit`…).
 - **Result:** 70–80% of daily memory lookups run locally for free.
 
-### 3. Context Compression (Token Distillation)
+### 3. Context Compression & Deterministic Indexing
 
-Instead of attaching 10 full files to your chat window:
+Instead of attaching 10 full files to your chat window or burning API tokens to summarise code:
 
-- The server performs a **vector search** and retrieves only the 3 most relevant sentence summaries.
-- Your IDE receives ~300 tokens of targeted context instead of 5,000 tokens of raw code.
-- **Result:** Faster responses, higher accuracy, and staying under model rate limits longer.
+- The server parses supported code files (`.py`, `.ts`, `.tsx`, etc.) locally using **tree-sitter**, extracting precise function signatures, docstrings, and classes at **zero API cost**.
+- For non-code files, it retrieves only the most relevant compressed summaries.
+- **Result:** Faster responses, zero hallucinated file structures, higher accuracy, and staying under model rate limits longer.
 
 ### 4. Cross-IDE Warm Start (No Context Tax)
 
@@ -133,6 +133,7 @@ zerikai_memory/
 | Python 3.11+ | Runtime | [python.org](https://python.org) |
 | Ollama | Free local summarisation (hybrid/local modes) | [ollama.com](https://ollama.com) |
 | DeepSeek API key | Cloud synthesis (hybrid/cloud modes) | [platform.deepseek.com](https://platform.deepseek.com) |
+| `tree-sitter` | Deterministic code parsing | [tree-sitter.github.io](https://tree-sitter.github.io) |
 
 ---
 
@@ -326,8 +327,8 @@ Tell your assistant:
 
 The assistant calls `scan_workspace`. This triggers the **Post-Scan Auto-Briefing**:
 
-1. Walks the directory (respecting `.memignore`) and saves compressed summaries of every readable file to ChromaDB.
-2. Performs **iterative synthesis**: queries memory for 15 relevant results per section across 9 project brief sections.
+1. Walks the directory (respecting `.memignore`). Supported code files are parsed into deterministic `tree-sitter` entities, while other text files get compressed summaries.
+2. Performs **iterative synthesis**: queries memory for up to 75 relevant `tree-sitter` nodes/summaries per section across 9 project brief sections.
 3. Uses the auto-router (DeepSeek in Hybrid/Cloud modes) to synthesise a complete, accurate **Project Brief**.
 4. Saves the brief to `.brain/contexts/<workspace_id>.md` and locks it to protect your DeepSeek KV cache prefix.
 
