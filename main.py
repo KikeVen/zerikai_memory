@@ -6,7 +6,7 @@ import os
 import re
 import sqlite3
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from uuid import uuid4
@@ -17,6 +17,7 @@ from mcp.server.fastmcp import FastMCP
 from ollama import Client
 from openai import OpenAI
 
+from code_indexer import extract_entities, get_supported_extensions
 from config import (
     CLOUD_ESCALATION_KEYWORDS,
     CLOUD_ESCALATION_WORD_COUNT,
@@ -202,7 +203,7 @@ def _track_token_usage(
                     cache_hit_tokens, cache_miss_tokens, estimated_cost_usd
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                datetime.utcnow().isoformat(),
+                datetime.now(timezone.utc).isoformat(),
                 workspace_id,
                 operation,
                 model,
@@ -305,7 +306,7 @@ def _derive_workspace_id(workspace_path: str) -> tuple[str, str]:
 
         # No existing workspace - create new UUID and register it
         workspace_uuid = str(uuid4())
-        created_at = datetime.utcnow().isoformat()
+        created_at = datetime.now(timezone.utc).isoformat()
 
         cursor.execute("""
             INSERT INTO workspace_registry (workspace_uuid, workspace_path, display_name, created_at)
@@ -590,9 +591,11 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
 
         # Semantic search for section-specific context
         with _db_lock:
+            total_docs = collection.count()
+            fetch_count = min(75, total_docs) if total_docs > 0 else 1
             results = collection.query(
                 query_texts=[section["query"]],
-                n_results=15,
+                n_results=fetch_count,
                 where={"category": "codebase"},
             )
 
@@ -602,15 +605,20 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
             # Fallback: grab any available context
             with _db_lock:
                 fallback = collection.get(
-                    where={"category": "codebase"}, limit=15)
+                    where={"category": "codebase"}, limit=fetch_count)
             docs = fallback.get("documents", [])
             metas = fallback.get("metadatas", [])
 
         # Re-attach filenames stripped by Ollama summarisation.
         # source_file is stored in metadata by save_to_memory; without it the
         # "Key Files & Directories" prompt has no paths to extract and returns empty.
+        #
+        # Skip source_type="manual" entries (chat snippets, pasted code) — their
+        # synthetic filenames would hallucinate non-existent files into the brief.
         context_parts = []
         for doc, meta in zip(docs, metas or [{}] * len(docs)):
+            if (meta or {}).get("source_type") == "manual":
+                continue
             src = (meta or {}).get("source_file", "")
             header = f"### {src}\n" if src else ""
             context_parts.append(f"{header}{doc}")
@@ -756,6 +764,12 @@ _TEXT_EXTENSIONS = {
 # Never read files larger than this (bytes).
 _MAX_FILE_BYTES = 100_000  # Increased from 64KB to 100KB to include main.py
 
+# Files larger than this (in lines) are split into chunks before indexing.
+# Prevents DeepSeek from truncating structured extraction on large files.
+_CHUNK_LINE_THRESHOLD = 300   # lines — files above this get chunked
+_CHUNK_SIZE_LINES = 250   # lines per chunk (with overlap)
+_CHUNK_OVERLAP_LINES = 20    # overlap between chunks for context continuity
+
 
 def _load_memignore(workspace_path: str) -> list[str]:
     """
@@ -796,6 +810,32 @@ def _is_ignored(file_path: Path, workspace_root: Path, patterns: list[str]) -> b
             return True
 
     return False
+
+
+def _chunk_file_content(
+    content: str,
+    chunk_size: int = _CHUNK_SIZE_LINES,
+    overlap: int = _CHUNK_OVERLAP_LINES,
+) -> list[str]:
+    """
+    Splits file content into overlapping line-based chunks.
+    Each chunk retains `overlap` lines from the previous chunk
+    for context continuity (e.g. a function signature that spans a boundary).
+    Returns a list of chunk strings. Single-chunk files return a list of one.
+    """
+    lines = content.splitlines(keepends=True)
+    if len(lines) <= chunk_size:
+        return [content]
+
+    chunks = []
+    start = 0
+    while start < len(lines):
+        end = min(start + chunk_size, len(lines))
+        chunks.append("".join(lines[start:end]))
+        if end == len(lines):
+            break
+        start = end - overlap  # step back by overlap for continuity
+    return chunks
 
 
 # ---------------------------------------------------------------------------
@@ -893,6 +933,7 @@ async def save_to_memory(
     workspace: str,
     category: str = "general",
     source_id: str | None = None,
+    last_modified: str | None = None,
 ) -> str:
     """
     Summarises and saves an architectural decision, project fact, or
@@ -908,20 +949,160 @@ async def save_to_memory(
         workspace_id, display_name, workspace_path = _resolve_workspace(
             workspace)
 
-        # File scanning: use cloud ONLY in "cloud" mode, not "hybrid"
+        # -------------------------------------------------------------------
+        # tree-sitter code extraction (deterministic, zero API cost)
+        # Replaces the .py/.js/.ts/.tsx LLM branches below for supported langs.
+        # -------------------------------------------------------------------
+        ext = Path(source_id or "").suffix.lower()
+        if ext in get_supported_extensions():
+            try:
+                entities = extract_entities(content, source_id or "")
+            except Exception as exc:
+                log.warning("tree-sitter parse failed for %s: %s",
+                            source_id, exc)
+                entities = []
+
+            if entities:
+                collection = _get_collection(workspace_id)
+                saved_count = 0
+                for entity in entities:
+                    doc_id = hashlib.md5(
+                        f"{workspace_id}:{source_id or 'snippet'}:{entity.name}:{entity.lineno}"
+                        .encode()
+                    ).hexdigest()
+                    is_manual = (source_id or "").startswith("chat/")
+
+                    meta = {
+                        "category": category,
+                        "workspace": workspace_id,
+                        "source_file": source_id or "",
+                        "source_type": "manual" if is_manual else "",
+                        "language": entity.language,
+                        "entity_type": entity.entity_type,
+                        "name": entity.name,
+                        "lineno": entity.lineno,
+                        "end_lineno": entity.end_lineno,
+                        "parent_class": entity.parent_class or "",
+                        "return_type": entity.return_type or "",
+                        "has_docstring": entity.docstring is not None,
+                        "params_count": len(entity.params),
+                        "last_modified": last_modified or "",
+                    }
+                    if entity.decorators:
+                        meta["decorators"] = entity.decorators
+
+                    with _db_lock:
+                        collection.upsert(
+                            documents=[entity.document_text],
+                            metadatas=[meta],
+                            ids=[doc_id],
+                        )
+                    saved_count += 1
+                return (
+                    f"[{workspace_id}] Archived {saved_count} entities "
+                    f"({category}): {entities[0].signature[:100]}..."
+                )
+            # If tree-sitter found nothing (empty file, unsupported constructs),
+            # fall through to the generic summary path below.
+
+        # ---------------------------------------------------------------------------
+        # File-type-aware prompt dispatch (non-code files only now)
+        # ---------------------------------------------------------------------------
+        # Select prompt + max_tokens based on file type so agents get precise,
+        # actionable indexes instead of generic prose summaries.
+        # ---------------------------------------------------------------------------
+
+        src = (source_id or "").lower()
+        src_name = Path(src).name  # bare filename for exact-name checks
+
+        if src.endswith(".py") or "::chunk_" in (source_id or ""):
+            # Structured index: imports, classes, functions with full signatures.
+            # Chunk-aware: if this is a partial chunk, tell DeepSeek to extract only what is visible.
+            is_chunk = "::chunk_" in (source_id or "")
+            chunk_note = (
+                "This is a partial chunk of a larger file. "
+                "Extract only what is visible in this chunk.\n\n"
+                if is_chunk else ""
+            )
+            index_prompt = (
+                f"You are a code indexer. Extract a structured index from the Python "
+                f"source below.\n\n"
+                f"{chunk_note}"
+                f"Respond ONLY in this exact format — no prose, no explanation:\n\n"
+                f"description: <one sentence in plain English describing what this file does overall>\n"
+                f"file: <filename>\n"
+                f"imports: <comma-separated top-level external imports>\n\n"
+                f"classes:\n"
+                f"  - <ClassName>: <one-line docstring or purpose>\n\n"
+                f"functions:\n"
+                f"  - <function_name>(<param: type = default>, ...) -> <return_type>\n"
+                f"      <one-line docstring or purpose>\n\n"
+                f"Include every public function and method visible in this chunk. "
+                f"Use exact parameter names, type annotations, and default values "
+                f"as they appear in the source.\n\n"
+                f"Source file: {source_id}\n\n"
+                f"{content}"
+            )
+            max_tok = 800
+        elif src_name == "requirements.txt":
+            # Exact package list — no summarisation
+            index_prompt = (
+                f"Extract the exact package list from the requirements file below.\n\n"
+                f"Respond ONLY in this exact format — no prose, no explanation:\n\n"
+                f"description: Python dependencies for this project.\n"
+                f"file: <filename>\n"
+                f"packages: <comma-separated package names, no version pins>\n\n"
+                f"Source file: {source_id}\n\n"
+                f"{content}"
+            )
+            max_tok = 100
+        elif src_name in (".env.example", ".env.template") or src.endswith(".env"):
+            # Key names only — never values
+            index_prompt = (
+                f"Extract only the environment variable KEY NAMES from the file below. "
+                f"Never include values.\n\n"
+                f"Respond ONLY in this exact format — no prose, no explanation:\n\n"
+                f"description: Environment variable configuration for this project.\n"
+                f"file: <filename>\n"
+                f"environment_variables: <comma-separated KEY names>\n\n"
+                f"Source file: {source_id}\n\n"
+                f"{content}"
+            )
+            max_tok = 100
+        elif src.endswith(".md"):
+            # Heading structure only — skip prose
+            index_prompt = (
+                f"Extract only the heading lines from the Markdown file below. "
+                f"Headings are lines starting with #, ##, ###, or ####.\n\n"
+                f"Respond ONLY in this exact format — no prose, no explanation:\n\n"
+                f"description: <one sentence in plain English describing what this document covers>\n"
+                f"file: <filename>\n"
+                f"headings:\n"
+                f"  - <heading line>\n\n"
+                f"Source file: {source_id}\n\n"
+                f"{content}"
+            )
+            max_tok = 150
+        else:
+            # Generic fallback — 2-3 sentence summary
+            index_prompt = (
+                f"Summarise the following for long-term technical memory "
+                f"in 2–3 concise sentences:\n\n"
+                f"{content}"
+            )
+            max_tok = 150
+
+        # ---------------------------------------------------------------------------
+        # Model dispatch: cloud vs local
+        # File scanning uses cloud ONLY in "cloud" mode, not "hybrid"
         # "hybrid" mode uses Ollama for scanning, DeepSeek for briefs/queries
+        # ---------------------------------------------------------------------------
         if DEFAULT_MEMORY_MODE == "cloud":
             response = await asyncio.to_thread(
                 ds_client.chat.completions.create,
                 model=DEEPSEEK_MODEL_FAST,
-                messages=[{
-                    "role": "user",
-                    "content": (
-                        f"Summarise the following for long-term technical memory "
-                        f"in 2–3 concise sentences:\n\n{content}"
-                    )
-                }],
-                max_tokens=150,
+                messages=[{"role": "user", "content": index_prompt}],
+                max_tokens=max_tok,
             )
             summary = response.choices[0].message.content.strip()
 
@@ -935,10 +1116,7 @@ async def save_to_memory(
             result = await asyncio.to_thread(
                 ol_client.generate,
                 model=OLLAMA_MODEL,
-                prompt=(
-                    f"Summarise the following for long-term technical memory "
-                    f"in 2–3 concise sentences:\n\n{content}"
-                ),
+                prompt=index_prompt,
             )
             summary = result["response"].strip()
 
@@ -957,6 +1135,8 @@ async def save_to_memory(
                     "category": category,
                     "workspace": workspace_id,
                     "source_file": source_id or "",   # preserves filename through Ollama summarisation
+                    "line_count": content.count("\n"),
+                    "last_modified": last_modified or "",
                 }],
                 ids=[doc_id],
             )
@@ -1442,22 +1622,111 @@ async def scan_workspace(
                 continue
 
             rel_path = file_path.relative_to(workspace_root).as_posix()
-            labelled = f"### {rel_path}\n{content}"
 
-            await save_to_memory(
-                content=labelled,
-                workspace=workspace_id,
-                category=category,
-                source_id=rel_path,
-            )
+            # Capture filesystem modification time for enriched metadata
+            last_modified_ts = datetime.fromtimestamp(
+                file_path.stat().st_mtime, timezone.utc
+            ).isoformat()
 
-            # Record that this ID is still valid
-            doc_id = hashlib.md5(
-                f"{workspace_id}:{rel_path}".encode()).hexdigest()
-            scanned_ids.add(doc_id)
+            ext = file_path.suffix.lower()
 
-            saved += 1
-            log.info("scan_workspace | saved: %s", rel_path)
+            # -------------------------------------------------------------------
+            # tree-sitter extraction for supported code files
+            # Each function/class becomes a separate ChromaDB document.
+            # No API calls, no token costs, no empty responses.
+            # -------------------------------------------------------------------
+            if ext in get_supported_extensions():
+                try:
+                    entities = extract_entities(content, rel_path)
+                except Exception as exc:
+                    log.warning(
+                        "scan_workspace | tree-sitter parse failed for %s: %s",
+                        rel_path, exc,
+                    )
+                    # Fall through to chunk-based save below
+                    entities = []
+
+                if entities:
+                    for entity in entities:
+                        doc_id = hashlib.md5(
+                            f"{workspace_id}:{rel_path}:{entity.name}:{entity.lineno}"
+                            .encode()
+                        ).hexdigest()
+                        meta = {
+                            "category": category,
+                            "workspace": workspace_id,
+                            "source_file": rel_path,
+                            "source_type": "",
+                            "language": entity.language,
+                            "entity_type": entity.entity_type,
+                            "name": entity.name,
+                            "lineno": entity.lineno,
+                            "end_lineno": entity.end_lineno,
+                            "parent_class": entity.parent_class or "",
+                            "return_type": entity.return_type or "",
+                            "has_docstring": entity.docstring is not None,
+                            "params_count": len(entity.params),
+                            "last_modified": last_modified_ts,
+                        }
+                        if entity.decorators:
+                            meta["decorators"] = entity.decorators
+
+                        with _db_lock:
+                            collection.upsert(
+                                documents=[entity.document_text],
+                                metadatas=[meta],
+                                ids=[doc_id],
+                            )
+                        scanned_ids.add(doc_id)
+                    saved += 1
+                    log.info(
+                        "scan_workspace | indexed %d entities from %s [%s]",
+                        len(
+                            entities), rel_path, entities[0].language if entities else "unknown",
+                    )
+                    continue  # skip the chunk-based path below
+
+            # -------------------------------------------------------------------
+            # Non-code files: keep existing chunking + LLM summarization
+            # -------------------------------------------------------------------
+            chunks = _chunk_file_content(content)
+            total_chunks = len(chunks)
+
+            for chunk_idx, chunk_text in enumerate(chunks):
+                if total_chunks > 1:
+                    chunk_header = (
+                        f"### {rel_path} "
+                        f"[chunk {chunk_idx + 1}/{total_chunks}]\n"
+                    )
+                else:
+                    chunk_header = f"### {rel_path}\n"
+
+                labelled_chunk = f"{chunk_header}{chunk_text}"
+
+                if total_chunks > 1:
+                    chunk_source_id = f"{rel_path}::chunk_{chunk_idx + 1}"
+                else:
+                    chunk_source_id = rel_path
+
+                await save_to_memory(
+                    content=labelled_chunk,
+                    workspace=workspace_id,
+                    category=category,
+                    source_id=chunk_source_id,
+                    last_modified=last_modified_ts,
+                )
+
+                doc_id = hashlib.md5(
+                    f"{workspace_id}:{chunk_source_id}".encode()
+                ).hexdigest()
+                scanned_ids.add(doc_id)
+
+                log.info(
+                    "scan_workspace | saved: %s [chunk %d/%d]",
+                    rel_path, chunk_idx + 1, total_chunks,
+                )
+
+            saved += 1  # increment once per file, not per chunk
 
         except Exception as exc:
             errors += 1
@@ -1708,7 +1977,7 @@ async def get_cost_report(
         conn.row_factory = sqlite3.Row
 
         # Calculate date range based on period
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         start_date = None
 
         if period == "today":
@@ -1893,10 +2162,13 @@ async def merge_workspaces(source_workspace_id: str, target_workspace_id: str) -
         target_workspace_id: The workspace ID to merge INTO (will receive all data)
     """
     try:
-        client = PersistentClient(path=str(DB_PATH))
+        # Use the global db_client singleton (DB_PATH/vector_db/) instead of
+        # instantiating a local PersistentClient, which would point at DB_PATH
+        # and open a second chroma.sqlite3 in the wrong directory, causing every
+        # collection lookup to fail silently.
 
         # Check if both workspaces exist
-        all_collections = {c.name for c in client.list_collections()}
+        all_collections = {c.name for c in db_client.list_collections()}
 
         if source_workspace_id not in all_collections:
             return f"ERROR: Source workspace '{source_workspace_id}' not found."
@@ -1907,8 +2179,8 @@ async def merge_workspaces(source_workspace_id: str, target_workspace_id: str) -
         if source_workspace_id == target_workspace_id:
             return "ERROR: Source and target workspace IDs must be different."
 
-        source_col = client.get_collection(source_workspace_id)
-        target_col = client.get_collection(target_workspace_id)
+        source_col = db_client.get_collection(source_workspace_id)
+        target_col = db_client.get_collection(target_workspace_id)
 
         # Get all data from source
         source_data = source_col.get(
@@ -1917,7 +2189,7 @@ async def merge_workspaces(source_workspace_id: str, target_workspace_id: str) -
         if not source_data["ids"]:
             log.info("Source workspace '%s' is empty, deleting it",
                      source_workspace_id)
-            client.delete_collection(source_workspace_id)
+            db_client.delete_collection(source_workspace_id)
             return f"Source workspace '{source_workspace_id}' was empty and has been deleted."
 
         # Add all source data to target
@@ -1930,7 +2202,7 @@ async def merge_workspaces(source_workspace_id: str, target_workspace_id: str) -
         )
 
         # Delete source workspace
-        client.delete_collection(source_workspace_id)
+        db_client.delete_collection(source_workspace_id)
 
         count = len(source_data["ids"])
         log.info(
