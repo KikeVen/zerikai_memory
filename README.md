@@ -118,6 +118,7 @@ zerikai_memory/
 │   └── contexts/                 # Per-workspace project briefs (.md files)
 ├── .env                          # API keys: never commit
 ├── .memignore                    # Files/dirs excluded from memory indexing
+├── code_indexer.py               # Deterministic tree-sitter extraction logic
 ├── config.py                     # Configuration & routing thresholds
 ├── drop_memory.py                # Cleanup utility (registry + vectors + files)
 ├── main.py                       # MCP server entry point
