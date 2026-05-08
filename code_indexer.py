@@ -18,6 +18,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import tree_sitter_css as tscss
+import tree_sitter_html as tshtml
 import tree_sitter_javascript as tsjavascript
 import tree_sitter_python as tspython
 import tree_sitter_typescript as tstypescript
@@ -43,6 +45,8 @@ PY_LANG = Language(tspython.language())
 JS_LANG = Language(tsjavascript.language())
 TS_LANG = Language(tstypescript.language_typescript())
 TSX_LANG = Language(tstypescript.language_tsx())
+CSS_LANG = Language(tscss.language())
+HTML_LANG = Language(tshtml.language())
 
 # Shared entity query for JavaScript-like languages (JS, TS, TSX)
 JS_LIKE_QUERY = """
@@ -115,6 +119,18 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         display_name="typescript",
         entity_query=JS_LIKE_QUERY,
     ),
+    ".css": LanguageConfig(
+        language=CSS_LANG,
+        extensions={".css"},
+        display_name="css",
+        entity_query="",
+    ),
+    ".html": LanguageConfig(
+        language=HTML_LANG,
+        extensions={".html", ".htm"},
+        display_name="html",
+        entity_query="",
+    ),
 }
 
 # Build reverse lookup: extension → config
@@ -182,6 +198,10 @@ def extract_entities(source_code: str, file_path: str) -> list[CodeEntity]:
 
     if config.display_name == "python":
         _extract_python(tree, source_code, file_path, config, entities)
+    elif config.display_name == "css":
+        _extract_css(tree, source_code, file_path, config, entities)
+    elif config.display_name == "html":
+        _extract_html(tree, source_code, file_path, config, entities)
     else:
         _extract_js_like(tree, source_code, file_path, config, entities)
 
@@ -827,6 +847,120 @@ def _extract_js_return_type(node: Node, source_bytes: bytes) -> str | None:
     if return_type_node is None:
         return None
     return return_type_node.text.decode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# CSS extraction
+# ---------------------------------------------------------------------------
+
+def _extract_css(
+    tree, source_code: str, file_path: str, config: LanguageConfig, entities: list[CodeEntity]
+) -> None:
+    root = tree.root_node
+
+    def _walk(node: Node):
+        for child in node.named_children:
+            if child.type == "rule_set":
+                selectors = ""
+                for c in child.named_children:
+                    if c.type == "selectors":
+                        selectors = c.text.decode("utf-8")
+                        break
+
+                if selectors:
+                    text = child.text.decode("utf-8")
+                    entities.append(CodeEntity(
+                        entity_type="rule_set",
+                        name=selectors.strip(),
+                        signature=f"CSS Rule: {selectors.strip()}",
+                        docstring=None,
+                        document_text=text,
+                        file_path=file_path,
+                        language=config.display_name,
+                        lineno=child.start_point[0] + 1,
+                        end_lineno=child.end_point[0] + 1,
+                        parent_class=None,
+                        decorators=[],
+                        params=[],
+                        return_type=None,
+                    ))
+            else:
+                _walk(child)
+
+    _walk(root)
+
+
+# ---------------------------------------------------------------------------
+# HTML extraction
+# ---------------------------------------------------------------------------
+
+def _extract_html(
+    tree, source_code: str, file_path: str, config: LanguageConfig, entities: list[CodeEntity]
+) -> None:
+    root = tree.root_node
+    semantic_tags = {"main", "header", "footer", "section", "article", "nav", "aside"}
+
+    def _walk(node: Node):
+        for child in node.named_children:
+            if child.type in ("element", "script_element", "style_element"):
+                tag_name = ""
+                element_id = ""
+
+                start_tag = None
+                for c in child.named_children:
+                    if c.type == "start_tag":
+                        start_tag = c
+                        break
+
+                if start_tag:
+                    for c in start_tag.named_children:
+                        if c.type == "tag_name":
+                            tag_name = c.text.decode("utf-8")
+                        elif c.type == "attribute":
+                            attr_name = ""
+                            attr_val = ""
+                            for ac in c.named_children:
+                                if ac.type == "attribute_name":
+                                    attr_name = ac.text.decode("utf-8")
+                                elif ac.type == "quoted_attribute_value":
+                                    attr_val = ac.text.decode("utf-8").strip("\"'")
+                            if attr_name == "id":
+                                element_id = attr_val
+
+                should_extract = False
+                if child.type in ("script_element", "style_element"):
+                    should_extract = True
+                elif tag_name in semantic_tags:
+                    should_extract = True
+                elif element_id:
+                    should_extract = True
+
+                if should_extract:
+                    name = f"<{tag_name}>" if tag_name else f"<{child.type}>"
+                    if element_id:
+                        name += f" #{element_id}"
+
+                    text = child.text.decode("utf-8")
+                    entities.append(CodeEntity(
+                        entity_type=child.type,
+                        name=name,
+                        signature=f"HTML Element: {name}",
+                        docstring=None,
+                        document_text=text,
+                        file_path=file_path,
+                        language=config.display_name,
+                        lineno=child.start_point[0] + 1,
+                        end_lineno=child.end_point[0] + 1,
+                        parent_class=None,
+                        decorators=[],
+                        params=[],
+                        return_type=None,
+                    ))
+
+            # Recurse to find nested ids or semantic tags
+            _walk(child)
+
+    _walk(root)
 
 
 # ---------------------------------------------------------------------------
