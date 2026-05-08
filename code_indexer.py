@@ -21,6 +21,7 @@ from pathlib import Path
 import tree_sitter_css as tscss
 import tree_sitter_html as tshtml
 import tree_sitter_javascript as tsjavascript
+import tree_sitter_markdown as tsmarkdown
 import tree_sitter_python as tspython
 import tree_sitter_typescript as tstypescript
 from tree_sitter import Language, Node, Parser, Query
@@ -47,6 +48,7 @@ TS_LANG = Language(tstypescript.language_typescript())
 TSX_LANG = Language(tstypescript.language_tsx())
 CSS_LANG = Language(tscss.language())
 HTML_LANG = Language(tshtml.language())
+MD_LANG = Language(tsmarkdown.language())
 
 # Shared entity query for JavaScript-like languages (JS, TS, TSX)
 JS_LIKE_QUERY = """
@@ -131,6 +133,12 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         display_name="html",
         entity_query="",
     ),
+    ".md": LanguageConfig(
+        language=MD_LANG,
+        extensions={".md", ".mdx"},
+        display_name="markdown",
+        entity_query="",
+    ),
 }
 
 # Build reverse lookup: extension → config
@@ -202,6 +210,8 @@ def extract_entities(source_code: str, file_path: str) -> list[CodeEntity]:
         _extract_css(tree, source_code, file_path, config, entities)
     elif config.display_name == "html":
         _extract_html(tree, source_code, file_path, config, entities)
+    elif config.display_name == "markdown":
+        _extract_markdown(tree, source_code, file_path, config, entities)
     else:
         _extract_js_like(tree, source_code, file_path, config, entities)
 
@@ -961,6 +971,127 @@ def _extract_html(
             _walk(child)
 
     _walk(root)
+
+
+# ---------------------------------------------------------------------------
+# Markdown extraction
+# ---------------------------------------------------------------------------
+
+def _extract_markdown(
+    tree, source_code: str, file_path: str, config: LanguageConfig, entities: list[CodeEntity]
+) -> None:
+    """Walk the tree-sitter CST for Markdown: headings and fenced code blocks."""
+    root = tree.root_node
+    lines = source_code.split("\n")
+
+    def _walk_sections(node: Node, heading_stack: list[str]) -> None:
+        """Recursively walk section nodes, extracting headings and code blocks."""
+        for child in node.named_children:
+            if child.type == "atx_heading":
+                # Determine heading level from marker (atx_h1_marker ... atx_h6_marker)
+                level = 1
+                heading_text = ""
+                for sub in child.children:
+                    if sub.type == "atx_h1_marker":
+                        level = 1
+                    elif sub.type == "atx_h2_marker":
+                        level = 2
+                    elif sub.type == "atx_h3_marker":
+                        level = 3
+                    elif sub.type == "atx_h4_marker":
+                        level = 4
+                    elif sub.type == "atx_h5_marker":
+                        level = 5
+                    elif sub.type == "atx_h6_marker":
+                        level = 6
+                    elif sub.type == "inline":
+                        heading_text = sub.text.decode("utf-8").strip()
+
+                if not heading_text:
+                    continue
+
+                # Build breadcrumb path
+                breadcrumb = heading_stack[: level - 1] + [heading_text]
+                path_str = " > ".join(breadcrumb)
+
+                # First paragraph after this heading (for richer document_text)
+                body_text = ""
+                # Walk siblings within the parent section to find the first paragraph
+                parent = child.parent
+                if parent:
+                    found_self = False
+                    for sibling in parent.named_children:
+                        if sibling == child:
+                            found_self = True
+                            continue
+                        if found_self and sibling.type == "paragraph":
+                            # Extract inline text
+                            for pchild in sibling.named_children:
+                                if pchild.type == "inline":
+                                    body_text = pchild.text.decode("utf-8").strip()
+                                    break
+                            break
+                        if found_self and sibling.type in ("atx_heading", "fenced_code_block", "section"):
+                            break
+
+                signature = f"{'#' * level} {heading_text}"
+                document_text = signature
+                if body_text:
+                    document_text += "\n" + body_text
+
+                entities.append(CodeEntity(
+                    entity_type="heading",
+                    name=path_str,
+                    signature=signature,
+                    docstring=None,
+                    document_text=document_text,
+                    file_path=file_path,
+                    language=config.display_name,
+                    lineno=child.start_point[0] + 1,
+                    end_lineno=child.end_point[0] + 1,
+                    parent_class=None,
+                    decorators=[],
+                    params=[],
+                    return_type=None,
+                ))
+
+            elif child.type == "fenced_code_block":
+                info_string = ""
+                code_content = ""
+                for sub in child.named_children:
+                    if sub.type == "info_string":
+                        info_string = sub.text.decode("utf-8").strip()
+                    elif sub.type == "code_fence_content":
+                        code_content = sub.text.decode("utf-8").strip()
+
+                if not code_content:
+                    continue
+
+                lang = info_string if info_string else "text"
+                signature = f"```{lang}"
+                document_text = f"```{lang}\n{code_content}\n```"
+
+                entities.append(CodeEntity(
+                    entity_type="code_block",
+                    name=lang,
+                    signature=signature,
+                    docstring=None,
+                    document_text=document_text,
+                    file_path=file_path,
+                    language=config.display_name,
+                    lineno=child.start_point[0] + 1,
+                    end_lineno=child.end_point[0] + 1,
+                    parent_class=None,
+                    decorators=[],
+                    params=[],
+                    return_type=None,
+                ))
+
+            elif child.type == "section":
+                # Recurse into subsections with inherited breadcrumb
+                _walk_sections(child, heading_stack)
+
+    _walk_sections(root, [])
 
 
 # ---------------------------------------------------------------------------
