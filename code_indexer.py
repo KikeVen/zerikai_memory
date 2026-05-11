@@ -182,9 +182,9 @@ def get_supported_extensions() -> set[str]:
 
 
 def extract_entities(source_code: str, file_path: str) -> list[CodeEntity]:
-    """Parse a source file and extract all functions, classes, and methods.
+    """Parse a source file with tree-sitter and extract all functions, classes, and methods.
 
-    Automatically selects the correct grammar based on file extension.
+    Automatically selects the correct tree-sitter grammar based on file extension.
     Returns empty list for unsupported extensions.
 
     Args:
@@ -401,7 +401,7 @@ def _extract_python_class(
 
 
 def _extract_python_docstring(node: Node, lines: list[str]) -> str | None:
-    """Extract the docstring from a Python function or class body."""
+    """Extract the docstring from a tree-sitter Python function or class body node."""
     body = node.child_by_field_name("body")
     if body is None:
         return None
@@ -437,9 +437,9 @@ def _extract_python_docstring(node: Node, lines: list[str]) -> str | None:
 
 
 def _extract_python_decorators(node: Node, source_bytes: bytes) -> list[str]:
-    """Extract decorator names from a Python function/class definition.
+    """Extract decorator names from a tree-sitter Python function/class definition.
 
-    Handles both:
+    Walks the tree-sitter CST to handle both:
     - decorated_definition nodes (decorators are named children)
     - function_definition / class_definition nodes (decorators are prev siblings)
     """
@@ -461,7 +461,7 @@ def _extract_python_decorators(node: Node, source_bytes: bytes) -> list[str]:
 
 
 def _extract_python_params(node: Node, source_bytes: bytes) -> list[dict]:
-    """Extract parameter names, types, and defaults from a Python function."""
+    """Extract parameter names, types, and defaults from a tree-sitter Python function node."""
     params_node = node.child_by_field_name("parameters")
     if params_node is None:
         return []
@@ -528,7 +528,7 @@ def _extract_python_params(node: Node, source_bytes: bytes) -> list[dict]:
 
 
 def _extract_python_return_type(node: Node, source_bytes: bytes) -> str | None:
-    """Extract the return type annotation from a Python function."""
+    """Extract the return type annotation from a tree-sitter Python function node."""
     return_type_node = node.child_by_field_name("return_type")
     if return_type_node is None:
         return None
@@ -543,7 +543,7 @@ def _extract_python_return_type(node: Node, source_bytes: bytes) -> str | None:
 def _extract_js_like(
     tree, source_code: str, file_path: str, config: LanguageConfig, entities: list[CodeEntity]
 ) -> None:
-    """Extract functions, methods, and classes from JS/TS/TSX source."""
+    """Extract functions, methods, and classes from JS/TS/TSX source using tree-sitter."""
     lines = source_code.split("\n")
     source_bytes = source_code.encode("utf-8")
     root = tree.root_node
@@ -1102,7 +1102,8 @@ def _extract_markdown(
 def _clean_docstring(docstring: str) -> str:
     """Clean up a docstring/JSDoc for embedding text.
 
-    Extracts the first paragraph/sentence — the summary line.
+    Strips quotes and JSDoc markers, joins meaningful lines,
+    and returns the full text (no truncation).
     """
     if not docstring:
         return ""
@@ -1112,7 +1113,7 @@ def _clean_docstring(docstring: str) -> str:
     text = text.strip('"').strip("'").strip()
 
     # Take the first meaningful line(s) — up to the first blank line
-    # or first period, whichever is shorter (but at least 1 sentence)
+    # Take meaningful lines up to the first blank line
     lines = text.split("\n")
     meaningful = []
     for line in lines:
@@ -1122,10 +1123,4 @@ def _clean_docstring(docstring: str) -> str:
         meaningful.append(stripped)
 
     result = " ".join(meaningful)
-
-    # Try to take up to the first period for a one-liner
-    first_period = result.find(". ")
-    if first_period > 20:  # Only truncate if we have a meaningful sentence
-        result = result[: first_period + 1]
-
     return result

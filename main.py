@@ -389,6 +389,22 @@ def _resolve_workspace(identifier: str) -> tuple[str, str, str]:
 UNINITIALIZED_MARKER = "<!-- ZERIKAI_PENDING_SYNTHESIS -->"
 
 
+def _truncate_for_brief(doc: str) -> str:
+    """First sentence only — keeps brief synthesis cheap without losing quality."""
+    lines = doc.strip().split("\n")
+    meaningful = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            break
+        meaningful.append(stripped)
+    result = " ".join(meaningful)
+    dot = result.find(". ")
+    if dot > 20:
+        result = result[:dot + 1]
+    return result
+
+
 async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud: bool = False) -> str:
     """
     Generates a comprehensive project brief using iterative section-by-section synthesis.
@@ -621,7 +637,7 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
                 continue
             src = (meta or {}).get("source_file", "")
             header = f"### {src}\n" if src else ""
-            context_parts.append(f"{header}{doc}")
+            context_parts.append(f"{header}{_truncate_for_brief(doc)}")
         context = "\n\n".join(context_parts)
         prompt = section["prompt_template"].format(context=context)
 
@@ -669,6 +685,16 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
     final_brief = "".join(brief_parts)
     log.info("_synthesize_deep_brief | Complete for %s", workspace_id)
     return final_brief
+
+
+async def _background_brief_synthesis(workspace_id: str, display_name: str, context_file: Path) -> None:
+    """Fire-and-forget brief synthesis — runs after scan returns to avoid MCP timeouts."""
+    try:
+        new_brief = await _synthesize_deep_brief(workspace_id, display_name, use_cloud=SYNTHESIZE_WITH_CLOUD)
+        context_file.write_text(new_brief, encoding="utf-8")
+        log.info("_background_brief_synthesis | brief saved for %s", display_name)
+    except Exception as exc:
+        log.error("_background_brief_synthesis | failed for %s: %s", display_name, exc)
 
 
 def _get_collection(workspace_id: str):
@@ -936,8 +962,12 @@ async def save_to_memory(
     last_modified: str | None = None,
 ) -> str:
     """
-    Summarises and saves an architectural decision, project fact, or
-    technical note to this workspace's persistent vector memory.
+    Summarises and saves content to this workspace's persistent vector memory.
+
+    For supported code files (.py, .js, .ts, .tsx, .jsx, .css, .html, .md),
+    uses tree-sitter to extract individual functions, methods, and classes
+    as structured CodeEntity objects — deterministic, zero API cost.
+    For all other file types, falls back to LLM-based summarisation.
 
     Args:
         content:   The raw content to remember.
@@ -1162,6 +1192,7 @@ async def query_memory(
     workspace: str,
     category: str | None = None,
     use_cloud: bool | None = None,
+    show_sources: bool = True,
 ) -> str:
     """
     Retrieves relevant context from this workspace's memory and synthesises
@@ -1178,6 +1209,10 @@ async def query_memory(
         category:   Optional filter to scope results by tag.
         use_cloud:  True = force DeepSeek. False = force Ollama.
                     None = auto-route (recommended).
+        show_sources: If True (default), appends a structured sources block
+                      (file:line — entity name) after the answer and enriches
+                      the LLM context with location markers. Set to False for
+                      cleaner output without file references.
     """
     try:
         workspace_id, display_name, workspace_path = _resolve_workspace(
@@ -1190,9 +1225,10 @@ async def query_memory(
             query_texts=[user_query],
             n_results=5,
             where=where,
-            include=["documents", "distances"],
+            include=["documents", "metadatas", "distances"],
         )
         docs = results.get("documents", [[]])[0]
+        metas = results.get("metadatas", [[]])[0]
         distances = results.get("distances", [[]])[0]
 
         # Check if anything was retrieved
@@ -1200,12 +1236,16 @@ async def query_memory(
             log.info("query_memory | no documents retrieved for workspace=%s query=%r",
                      workspace_id, user_query)
             context = "No specific code snippets found in memory."
+            sources = []
         else:
             # Distance threshold — ChromaDB returns L2 distances; filter out results
             # that are too dissimilar. Tune via QUERY_DISTANCE_THRESHOLD in .env.
             # (0 = identical, higher = less similar; >1.5 is typically noise)
-            relevant = [(doc, dist) for doc, dist in zip(
-                docs, distances) if dist <= QUERY_DISTANCE_THRESHOLD]
+            relevant = [
+                (doc, meta, dist)
+                for doc, meta, dist in zip(docs, metas, distances)
+                if dist <= QUERY_DISTANCE_THRESHOLD
+            ]
 
             if not relevant:
                 best = min(distances)
@@ -1214,18 +1254,60 @@ async def query_memory(
                     best, workspace_id, user_query,
                 )
                 context = "No specific code snippets found below distance threshold."
+                sources = []
             else:
                 log.info(
                     "query_memory | %d/%d results passed threshold for workspace=%s",
                     len(relevant), len(docs), workspace_id,
                 )
-                context = "\n".join(doc for doc, _ in relevant)
+                # Build location-tagged context and sources list
+                context_parts = []
+                sources = []
+                for doc, meta, dist in relevant:
+                    meta = meta or {}
+                    src_file = meta.get("source_file", "")
+                    lineno = meta.get("lineno", "")
+                    name = meta.get("name", "")
+                    entity_type = meta.get("entity_type", "")
+                    parent = meta.get("parent_class", "")
+
+                    location_label = ""
+                    source_entry = ""
+                    if show_sources and src_file and lineno:
+                        location = f"{src_file}:{lineno}"
+                        if name and entity_type:
+                            label = f"{name} ({entity_type})"
+                            if parent:
+                                label += f" in {parent}"
+                            location_label = f"[{location}] {label}"
+                            source_entry = f"| `{name}` | {src_file} | {lineno} | {dist:.2f} |"
+                        else:
+                            location_label = f"[{location}]"
+                            source_entry = f"| — | {src_file} | {lineno} | {dist:.2f} |"
+
+                    if location_label:
+                        context_parts.append(f"{location_label}\n{doc}")
+                    else:
+                        context_parts.append(doc)
+
+                    if source_entry:
+                        sources.append(source_entry)
+
+                context = "\n\n".join(context_parts)
 
         # 2. Route and synthesise
         if _should_use_cloud(user_query, use_cloud):
-            return await _query_deepseek(context, user_query, workspace_id)
+            answer = await _query_deepseek(context, user_query, workspace_id)
         else:
-            return await _query_ollama(context, user_query, workspace_id)
+            answer = await _query_ollama(context, user_query, workspace_id)
+
+        # Prepend sources block so agents can't hide it from the user
+        if show_sources and sources:
+            table = "## Sources\n\n| Entity | File | Line | Distance |\n|---|---|---|---|\n"
+            table += "\n".join(sources)
+            answer = table + "\n\n" + answer
+
+        return answer
 
     except Exception as exc:
         log.error("query_memory failed: %s", exc)
@@ -1553,8 +1635,9 @@ async def scan_workspace(
     force_refresh_brief: bool = False,
 ) -> str:
     """
-    Walks the entire workspace directory, respects .memignore, and saves
-    every readable text file to this workspace's persistent memory.
+    Walks the entire workspace directory using tree-sitter for code files,
+    respects .memignore, and saves every readable text file to this
+    workspace's persistent vector memory.
 
     Idempotent and Self-Cleaning:
     - Overwrites existing files with deterministic IDs.
@@ -1735,32 +1818,26 @@ async def scan_workspace(
         log.info("scan_workspace | purged %d stale memories for %s",
                  len(stale_ids), workspace_id)
 
-    # Brief Synthesis Logic
+    # Brief Synthesis Logic (fire-and-forget to avoid MCP timeouts)
     context_dir = Path(DB_PATH) / "contexts"
     context_file = context_dir / f"{workspace_id}.md"
 
-    brief_synthesized = False
-    if context_file.exists():
-        current_text = context_file.read_text(
-            encoding="utf-8", errors="ignore")
-        needs_synthesis = force_refresh_brief or (
-            UNINITIALIZED_MARKER in current_text)
+    brief_status = "No (Cache Stable)"
+    trigger_brief = False
 
-        if needs_synthesis:
-            log.info(
-                "scan_workspace | triggering deep brief synthesis for %s", display_name)
-            new_brief = await _synthesize_deep_brief(workspace_id, display_name, use_cloud=SYNTHESIZE_WITH_CLOUD)
-            context_file.write_text(new_brief, encoding="utf-8")
-            brief_synthesized = True
-    else:
-        # First scan - auto-generate the brief if we have any data
-        if saved > 0:
-            log.info(
-                "scan_workspace | first scan detected, auto-generating brief for %s", display_name)
-            new_brief = await _synthesize_deep_brief(workspace_id, display_name, use_cloud=SYNTHESIZE_WITH_CLOUD)
-            context_dir.mkdir(parents=True, exist_ok=True)
-            context_file.write_text(new_brief, encoding="utf-8")
-            brief_synthesized = True
+    if context_file.exists():
+        current_text = context_file.read_text(encoding="utf-8", errors="ignore")
+        if force_refresh_brief or (UNINITIALIZED_MARKER in current_text):
+            trigger_brief = True
+            brief_status = "In progress (background)"
+    elif saved > 0:
+        trigger_brief = True
+        brief_status = "In progress (background)"
+
+    if trigger_brief:
+        context_dir.mkdir(parents=True, exist_ok=True)
+        log.info("scan_workspace | triggering background brief synthesis for %s", display_name)
+        asyncio.create_task(_background_brief_synthesis(workspace_id, display_name, context_file))
 
     stats = (
         f"Scan complete for `{display_name}`\n"
@@ -1769,7 +1846,7 @@ async def scan_workspace(
         f"- Skipped: {skipped}\n"
         f"- Purged: {len(stale_ids)}\n"
         f"- Errors: {errors}\n"
-        f"- Brief Synthesized: {'Yes' if brief_synthesized else 'No (Cache Stable)'}\n\n"
+        f"- Brief: {brief_status}\n\n"
         f"Query this workspace:\n"
         f"  query_memory(workspace=\"{workspace_id[:8]}\", user_query=\"...\")\n"
         f"  get_brief(workspace=\"{workspace_id[:8]}\")"
