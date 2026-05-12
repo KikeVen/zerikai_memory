@@ -11,10 +11,10 @@ except ImportError as e:
     sys.exit(1)
 
 def resolve_workspace_identifier(identifier):
-    """
-    Resolves a user-provided identifier to a workspace UUID.
-    Accepts either a display name or UUID.
-    
+    """Resolves a UUID or display name to a workspace UUID via the
+    sqlite3 registry — tries UUID first, falls back to display name.
+    Guarantees (None, None) on not-found or database error. Read-only.
+
     Returns:
         (workspace_uuid, display_name) if found, else (None, None)
     """
@@ -51,9 +51,10 @@ def resolve_workspace_identifier(identifier):
         return (None, None)
 
 def drop_workspace_memory(identifier):
-    """
-    Deletes all memory data for a workspace: vectors, context file, and registry entry.
-    Accepts either a display name or UUID.
+    """Permanently deletes all workspace memory from ChromaDB,
+    context files, and the sqlite3 registry. Best-effort 3-step
+    teardown — each step skips gracefully if already absent.
+    Irreversible.
     """
     workspace_uuid, display_name = resolve_workspace_identifier(identifier)
     

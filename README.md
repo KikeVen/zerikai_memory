@@ -22,10 +22,11 @@ A standalone local-only Python MCP server that gives any IDE persistent, workspa
 12. [MCP Tools Reference](#mcp-tools-reference)
 13. [Monitoring & Logs](#monitoring--logs)
 14. [Auxiliary Scripts](#auxiliary-scripts)
-15. [DeepSeek KV Cache Optimisation](#deepseek-kv-cache-optimisation)
-16. [Security & Data Privacy](#security--data-privacy)
-17. [Troubleshooting](#troubleshooting)
-18. [Notice](#notice)
+15. [Embedding-Docstring Skill](#embedding-docstring-skill)
+16. [DeepSeek KV Cache Optimisation](#deepseek-kv-cache-optimisation)
+17. [Security & Data Privacy](#security--data-privacy)
+18. [Troubleshooting](#troubleshooting)
+19. [Notice](#notice)
 
 ---
 
@@ -42,6 +43,15 @@ By storing compressed, semantically searchable summaries of your codebase and ar
 
 The server runs **entirely on your local machine**. Each IDE connects via STDIO to its own server process, with direct filesystem access for workspace scanning.
 
+### New Features - 2026-05-11
+
+- **Sources table**: Every `query_memory` response prepends a `## Sources` Markdown table with entity name, file, line, and semantic distance.
+- **Full docstrings embedded**: `_clean_docstring` no longer truncates to first sentence; the LLM sees complete function descriptions for richer answers.
+- **`show_sources` toggle**: Callers can enable or disable the Sources table per query; defaults to on.
+- **Fire-and-forget brief synthesis**: `scan_workspace` returns immediately; brief generates in background, no more MCP timeouts.
+- **Tighter distance threshold**: Default `QUERY_DISTANCE_THRESHOLD=1.0` in `.env`, eliminating false positives.
+- **Embedding-docstring skill**: A companion skill (`skill/embedding-docstring.md`) that audits docstrings for embedding quality: technology naming, routing documentation, guarantees, and size limits.
+
 ---
 
 ## How It Works
@@ -56,7 +66,7 @@ Your IDE  ──►  MCP Server (main.py)  ──►  ChromaDB (.brain/vector_db
 When you ask your AI assistant a question:
 
 1. The MCP server receives the query.
-2. It performs a **vector search** against ChromaDB to retrieve the most relevant 3-sentence summaries from your codebase.
+2. It performs a **vector search** against ChromaDB to retrieve the most relevant entities (function signatures, docstrings, file summaries) from your codebase.
 3. The auto-router decides whether to send the query to **Ollama** (local, free) or **DeepSeek** (cloud, billed).
 4. The synthesised answer is returned to your IDE ; enriched with workspace context, without bloating your chat window.
 
@@ -72,38 +82,7 @@ The AI assistant can resolve any workspace identifier: UUID, short-UUID, or disp
 
 ## Cost Savings Explained
 
-Zerikai Memory is built around four specific cost-saving mechanisms.
-
-### 1. DeepSeek KV Caching (50× Cheaper Reasoning)
-
-Standard LLM calls re-process your entire project brief on every query. DeepSeek's KV Caching avoids this:
-
-- The server places your stable **Project Brief** at the start of the system message.
-- DeepSeek recognises the identical prefix and charges a **cache hit rate** of ~\$0.0028/M tokens instead of ~\$0.14/M (cache miss) for v4-flash.
-- **Result:** After the first query of a session, a 1,000-token project brief costs virtually nothing, a **50× saving per query**.
-
-### 2. Ollama-First Auto-Routing (70–80% Free Queries)
-
-On `hybrid` mode, the auto-router acts as a financial gatekeeper:
-
-- **Routine queries** (e.g., "What was the naming convention for our API routes?") → handled by **Ollama** at \$0.
-- **Escalation** only occurs for complex queries (40+ words) or architectural keywords (`refactor`, `design`, `migration`, `audit`…).
-- **Result:** 70–80% of daily memory lookups run locally for free.
-
-### 3. Context Compression & Deterministic Indexing
-
-Instead of attaching 10 full files to your chat window or burning API tokens to summarise code:
-
-- The server parses supported code files (`.py`, `.ts`, `.tsx`, etc.) locally using **tree-sitter**, extracting precise function signatures, docstrings, and classes at **zero API cost**.
-- For non-code files, it retrieves only the most relevant compressed summaries.
-- **Result:** Faster responses, zero hallucinated file structures, higher accuracy, and staying under model rate limits longer.
-
-### 4. Cross-IDE Warm Start (No Context Tax)
-
-Both your IDEs point to the same `.brain/` directory:
-
-- Work refactored in VS Code via `save_to_memory` is instantly available in Cursor or Claude Desktop.
-- **Result:** Zero re-explanation cost when switching tools.
+DeepSeek is invoked in three places: query synthesis (when auto-routed for long or architectural queries), brief synthesis (9 section calls totalling ~$0.003 per full regeneration), and file scanning when in cloud mode (~$0.000167 per file). In hybrid mode, routine queries and file scans run on Ollama at $0. The Project Brief is a fixed prefix across queries, so DeepSeek caches it at $0.0028/M tokens (hit) vs $0.14/M (miss), 50x cheaper after the first query. Code files are parsed locally by tree-sitter at zero API cost regardless of mode. All IDEs share the same .brain/ directory, so context saved in one is instantly available in another with no re-explanation cost. Every query_memory response includes a ## Sources Markdown table with entity name, file, line, and distance. This metadata is already stored during scanning at no extra API cost.
 
 ---
 
@@ -122,7 +101,8 @@ zerikai_memory/
 ├── config.py                     # Configuration & routing thresholds
 ├── drop_memory.py                # Cleanup utility (registry + vectors + files)
 ├── main.py                       # MCP server entry point
-└── requirements.txt
+├── requirements.txt
+└── skill/                        # Companion skills (embedding-docstring, etc.)
 ```
 
 ---
@@ -134,7 +114,6 @@ zerikai_memory/
 | Python 3.11+ | Runtime | [python.org](https://python.org) |
 | Ollama | Free local summarisation (hybrid/local modes) | [ollama.com](https://ollama.com) |
 | DeepSeek API key | Cloud synthesis (hybrid/cloud modes) | [platform.deepseek.com](https://platform.deepseek.com) |
-| `tree-sitter` | Deterministic code parsing | [tree-sitter.github.io](https://tree-sitter.github.io) |
 
 ---
 
@@ -446,7 +425,7 @@ You never call these tools directly, your AI assistant calls them based on your 
 | `scan_workspace` | Walks the directory, respects `.memignore`, and saves all readable text files to persistent memory. Idempotent and self-cleaning. |
 | `save_to_memory` | Manually saves an architectural decision, fact, or technical note with an optional category tag. |
 | `list_memory` | Lists stored memories for a workspace, optionally filtered by category. |
-| `query_memory` | Retrieves relevant context via vector search and synthesises an answer via Ollama or DeepSeek (auto-routed). |
+| `query_memory` | Retrieves relevant context via vector search and synthesises an answer via Ollama or DeepSeek (auto-routed). Returns a `## Sources` Markdown table with entity name, file, line, and distance. Defaults to on; set `show_sources=False` for clean output. Different agents render the table differently: Claude Desktop may need prompting to show it; after the format was changed to raw Markdown, agents display it directly. Ask "show me the source chart" to surface it. |
 | `get_brief` | Retrieves the current project brief from `.brain/contexts/`. |
 | `update_brief` | Manually updates the markdown content of a project brief. |
 
@@ -531,6 +510,38 @@ Find workspace names and IDs with `list_workspaces` or by listing `.brain/contex
 After wiping, fix your `.memignore`, then re-run `init_workspace` and `scan_workspace`.
 
 ---
+
+## Embedding-Docstring Skill
+
+The embedding-docstring skill (`skill/embedding-docstring.md`) is a companion skill that helps maintain docstring quality across any codebase. It audits functions, methods, and classes for embedding-optimized docstrings that are rich, dense, and keyword-accurate so semantic search retrieves them correctly.
+
+### What it checks
+
+- **Technology names**: If the code imports `redis`, the docstring should say "Redis", not "key-value store". The embedding matches words, not concepts.
+- **Routing / branches**: "Uses tree-sitter for code files, falls back to LLM summarization": decision logic must be documented.
+- **Guarantees**: Idempotency, atomicity, ordering, or "no guarantees" stated explicitly.
+- **Side effects**: What the function writes, calls, or mutates beyond its return value.
+- **Size limit**: Prose body above `Args:`/`Returns:` capped at 4 lines or 400 characters, whichever is shorter.
+
+### How to use it
+
+In any workspace, tell your assistant:
+
+```
+audit docstrings in api_handler.py using the embedding-docstring skill
+```
+
+or for a single function:
+
+```
+optimize the docstring for authenticate_user for vector search
+```
+
+The skill reads the source, applies the checklist, flags violations with line numbers, and proposes before/after diffs for approval. It works with Python, JavaScript, TypeScript, and any language with docstring conventions.
+
+### Why it exists
+
+Docstrings that are too short, too vague, or missing technology names starve semantic search. The LLM can only synthesize from what's embedded. The skill ensures every docstring carries enough keyword density to be findable.
 
 ## DeepSeek KV Cache Optimisation
 

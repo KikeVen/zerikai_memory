@@ -95,7 +95,11 @@ ol_client = Client(host=OLLAMA_HOST)
 # Token usage tracking database
 # ---------------------------------------------------------------------------
 def _init_db():
-    """Initialize SQLite database for token tracking and workspace registry."""
+    """Initialises zerikai.db via sqlite3: creates token_usage and
+    workspace_registry tables (IF NOT EXISTS), auto-migrates missing
+    columns, and enables WAL mode. Skips entirely if token tracking
+    is disabled. Idempotent.
+    """
     if not ENABLE_TOKEN_TRACKING:
         return
 
@@ -164,8 +168,10 @@ def _track_token_usage(
     model: str,
     usage: object,
 ):
-    """
-    Records DeepSeek API token usage to SQLite.
+    """Records DeepSeek API token usage and estimated cost to the
+    zerikai.db sqlite3 token_usage table. Best-effort: returns
+    silently if tracking is disabled, usage is None, or insert
+    fails. Side effect: inserts one row per call.
 
     Args:
         workspace_id: The workspace identifier
@@ -390,7 +396,10 @@ UNINITIALIZED_MARKER = "<!-- ZERIKAI_PENDING_SYNTHESIS -->"
 
 
 def _truncate_for_brief(doc: str) -> str:
-    """First sentence only — keeps brief synthesis cheap without losing quality."""
+    """Truncates a docstring to its first sentence only — keeps
+    brief synthesis cheap. Skips any lead blank lines, then splits
+    at the first period followed by a space (min 20 chars).
+    """
     lines = doc.strip().split("\n")
     meaningful = []
     for line in lines:
@@ -406,19 +415,11 @@ def _truncate_for_brief(doc: str) -> str:
 
 
 async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud: bool = False) -> str:
-    """
-    Generates a comprehensive project brief using iterative section-by-section synthesis.
-
-    Instead of overwhelming the model with 50 summaries at once, this approach:
-    1. Queries the vector DB with section-specific semantic searches
-    2. Feeds only relevant context (10-15 results) to the model per section
-    3. Uses simple, direct prompts like the original approach
-    4. Builds the brief incrementally, one section at a time
-
-    This dramatically improves output quality for small local models by:
-    - Reducing context window pressure
-    - Providing focused, relevant information per section
-    - Using clear, straightforward instructions
+    """Iteratively builds a 9-section project brief by querying
+    ChromaDB with section-specific searches, feeding ~10-15
+    results per section to DeepSeek or Ollama. Tracks token usage.
+    Guard: returns minimal brief if no codebase data exists.
+    Per-section fallback: grabs all context if query returns empty.
 
     Args:
         workspace_id: The workspace UUID (for collection access)
@@ -688,7 +689,11 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
 
 
 async def _background_brief_synthesis(workspace_id: str, display_name: str, context_file: Path) -> None:
-    """Fire-and-forget brief synthesis — runs after scan returns to avoid MCP timeouts."""
+    """Fire-and-forget brief synthesis after scan to avoid MCP
+    timeouts. Delegates to _synthesize_deep_brief (cloud/local
+    via SYNTHESIZE_WITH_CLOUD). Creates/overwrites
+    .brain/contexts/<id>.md. Errors logged, not propagated.
+    """
     try:
         new_brief = await _synthesize_deep_brief(workspace_id, display_name, use_cloud=SYNTHESIZE_WITH_CLOUD)
         context_file.write_text(new_brief, encoding="utf-8")
@@ -703,15 +708,10 @@ def _get_collection(workspace_id: str):
 
 
 def _load_project_context(workspace_id: str) -> str:
-    """
-    Loads the per-workspace project brief from .brain/contexts/<id>.md.
-
-    This text is prepended to every DeepSeek system message as the stable
-    cache prefix. The more substantive and stable this content is, the higher
-    the DeepSeek KV cache hit rate — and the lower the per-query cost.
-
-    If no brief exists yet, returns a minimal placeholder. Run
-    `init_workspace` to scaffold the file for editing.
+    """Loads the per-workspace project brief from
+    .brain/contexts/<id>.md as the stable prefix for DeepSeek KV
+    cache optimisation. Creates contexts/ on first call. Falls back
+    to a placeholder string if no brief file exists.
     """
     context_dir = Path(DB_PATH) / "contexts"
     context_dir.mkdir(parents=True, exist_ok=True)
@@ -729,24 +729,10 @@ def _load_project_context(workspace_id: str) -> str:
 
 
 def _build_system_message(workspace_id: str) -> str:
-    """
-    Assembles the full system message for DeepSeek.
-
-    Structure (order matters for cache hits):
-      1. Fixed role instruction     — identical across ALL workspaces
-      2. Per-workspace project brief — stable for the life of the project
-
-    DeepSeek caches on PREFIX match from token 0. Because section 1 is
-    always identical, at minimum the role instruction hits the cache on
-    every second+ call. Once section 2 is also stable (i.e. the brief
-    doesn't change between calls), the entire system message prefix is
-    cached — covering your largest token block at the cheaper cache hit rate.
-
-    Per https://api-docs.deepseek.com/guides/kv_cache, the cache system:
-    - Works on a "best-effort" basis (no 100% hit guarantee)
-    - Detects common prefixes across requests automatically
-    - Persists cache units at request boundaries and fixed token intervals
-    - Builds caches in seconds; unused caches expire in hours to days
+    """Assembles the DeepSeek system message: fixed role instruction
+    + per-workspace project brief. Order matters — the identical
+    prefix maximises DeepSeek KV cache hits across calls. Logs token
+    count via tiktoken. Cache is best-effort.
     """
     role_instruction = (
         "You are a project memory assistant. "
@@ -814,9 +800,10 @@ def _load_memignore(workspace_path: str) -> list[str]:
 
 
 def _is_ignored(file_path: Path, workspace_root: Path, patterns: list[str]) -> bool:
-    """
-    Returns True if file_path should be SKIPPED based on .memignore patterns.
-    Matches the mental model of .gitignore.
+    """Returns True if file should be skipped based on .memignore
+    gitignore-style patterns via fnmatch. Two matching strategies:
+    matches any single path component (directory names), then full
+    relative path. Returns False on path resolution error.
     """
     try:
         rel = file_path.relative_to(workspace_root)
@@ -843,11 +830,10 @@ def _chunk_file_content(
     chunk_size: int = _CHUNK_SIZE_LINES,
     overlap: int = _CHUNK_OVERLAP_LINES,
 ) -> list[str]:
-    """
-    Splits file content into overlapping line-based chunks.
-    Each chunk retains `overlap` lines from the previous chunk
-    for context continuity (e.g. a function signature that spans a boundary).
-    Returns a list of chunk strings. Single-chunk files return a list of one.
+    """Splits file content into overlapping line-based chunks.
+    Single-chunk files pass through as-is. Multi-chunk files use
+    configurable overlap (default 20 lines) for context continuity.
+    Always returns list[str] with at least one element. Pure.
     """
     lines = content.splitlines(keepends=True)
     if len(lines) <= chunk_size:
@@ -869,14 +855,10 @@ def _chunk_file_content(
 # ---------------------------------------------------------------------------
 
 def _should_use_cloud(user_query: str, use_cloud: bool | None) -> bool:
-    """
-    Determines whether this query should be synthesised by DeepSeek or Ollama.
-
-    Priority order:
-      1. Explicit override: use_cloud=True/False from the caller always wins.
-      2. Keyword escalation: architectural / strategic keywords → cloud.
-      3. Length escalation: long, multi-part queries → cloud.
-      4. Default fallback: DEFAULT_MEMORY_MODE from .env.
+    """Routes queries to DeepSeek or Ollama via a 4-step priority
+    chain: explicit override overrides all, then keyword escalation
+    (architectural terms), then length escalation (40+ words), then
+    DEFAULT_MEMORY_MODE. Pure, deterministic.
     """
     if use_cloud is not None:
         return use_cloud
@@ -915,11 +897,10 @@ def _select_model(user_query: str) -> str:
 
 @mcp.tool()
 async def init_workspace(workspace_path: str) -> str:
-    """
-    Scaffolds the project brief file for a new workspace.
-
-    It creates a marker file indicating that the project is waiting
-    for its first `scan_workspace` to automatically synthesize the brief.
+    """Scaffolds a project brief via _derive_workspace_id (sqlite3
+    registry). Creates a placeholder in .brain/contexts/<id>.md
+    awaiting scan_workspace. Idempotent on re-call. Registers
+    workspace in zerikai.db.
 
     Args:
         workspace_path: Absolute path to the project root.

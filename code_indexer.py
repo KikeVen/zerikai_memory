@@ -33,7 +33,7 @@ from tree_sitter import Language, Node, Parser, Query
 
 @dataclass
 class LanguageConfig:
-    """Configuration for a supported language."""
+    """Configuration for a supported tree-sitter language."""
 
     language: Language  # tree-sitter Language object
     extensions: set[str]  # e.g. {".py"}
@@ -154,7 +154,7 @@ for config in LANGUAGE_CONFIGS.values():
 
 @dataclass
 class CodeEntity:
-    """A single indexable code entity extracted from a source file."""
+    """A single indexable code entity extracted by tree-sitter from a source file."""
 
     entity_type: str  # "function", "method", "class"
     name: str  # e.g. "scan_workspace"
@@ -600,7 +600,7 @@ def _extract_js_function(
     language: str,
     parent_class: str | None,
 ) -> CodeEntity | None:
-    """Extract a JS/TS function or method definition."""
+    """Extract a JS/TS function or method definition from a tree-sitter node."""
     name_node = node.child_by_field_name("name")
     if name_node is None:
         return None
@@ -669,7 +669,7 @@ def _extract_arrow_function(
     language: str,
     parent_class: str | None,
 ) -> CodeEntity | None:
-    """Extract a const arrow function: `const myFunc = (params) => { ... }`"""
+    """Extract a const arrow function from a tree-sitter node: `const myFunc = (params) => { ... }`"""
     name_node = node.child_by_field_name("name")
     if name_node is None:
         return None
@@ -732,7 +732,7 @@ def _extract_js_class(
     file_path: str,
     language: str,
 ) -> CodeEntity | None:
-    """Extract a JS/TS class definition."""
+    """Extract a JS/TS class definition from a tree-sitter node."""
     name_node = node.child_by_field_name("name")
     if name_node is None:
         return None
@@ -805,7 +805,7 @@ def _extract_jsdoc(node: Node, lines: list[str]) -> str | None:
 
 
 def _extract_js_params(node: Node, source_bytes: bytes) -> list[dict]:
-    """Extract parameters from a JS/TS function or arrow function."""
+    """Extract parameters from a tree-sitter JS/TS function or arrow function node."""
     params_node = node.child_by_field_name("parameters")
     if params_node is None:
         return []
@@ -852,7 +852,7 @@ def _extract_js_params(node: Node, source_bytes: bytes) -> list[dict]:
 
 
 def _extract_js_return_type(node: Node, source_bytes: bytes) -> str | None:
-    """Extract the return type annotation from a JS/TS function."""
+    """Extract the return type annotation from a tree-sitter JS/TS function node."""
     return_type_node = node.child_by_field_name("return_type")
     if return_type_node is None:
         return None
