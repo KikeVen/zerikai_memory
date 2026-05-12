@@ -15,7 +15,7 @@ A standalone local-only Python MCP server that gives any IDE persistent, workspa
 5. [Prerequisites](#prerequisites)
 6. **[Installation](#installation)** *
 7. [IDE Registration](#ide-registration)
-8. [First-Time Setup](#first-time-setup)
+8. [Workspace Setup (per project)](#workspace-setup-per-project)
 9. [Day-to-Day Usage](#day-to-day-usage)
 10. [Auto-Routing Reference](#auto-routing-reference)
 11. [Project Brief Structure](#project-brief-structure)
@@ -260,7 +260,7 @@ Add to `.cursor/mcp.json`:
 
 ---
 
-## First-Time Setup
+## Workspace Setup (per project)
 
 ### 1. Setup the `.memignore` file
 
