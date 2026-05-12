@@ -414,7 +414,7 @@ def _truncate_for_brief(doc: str) -> str:
     return result
 
 
-async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud: bool = False) -> str:
+async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud: bool = True) -> str:
     """Iteratively builds a 9-section project brief by querying
     ChromaDB with section-specific searches, feeding ~10-15
     results per section to DeepSeek or Ollama. Tracks token usage.
@@ -502,11 +502,12 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
                 f"You are a senior software architect analyzing the `{display_name}` project. "
                 "Based on the following file summaries from the codebase, list the Primary Conventions. "
                 "Be concise and direct. Start directly with the first bullet point — no introductory text.\n\n"
-                "Use this format:\n"
+                "Use this format for any sections that apply:\n"
                 "* **Code Organization:** [How code is structured into directories/modules]\n"
-                "* **API Documentation:** [Standard used if any]\n"
+                "* **Docstring Style:** [Convention used, e.g. Google/NumPy/Sphinx, or embedding-docstring skill]\n"
                 "* **Error Handling:** [Method and logging mechanism]\n"
                 "* **Database Schema:** [Where defined and how updated]\n\n"
+                "Omit any section that does not apply to this project. Do not add any other sections.\n\n"
                 "=== CODEBASE SUMMARIES ===\n"
                 "{context}\n\n"
                 "List the Primary Conventions:"
@@ -919,7 +920,7 @@ async def init_workspace(workspace_path: str) -> str:
             f"  query_memory(workspace=\"{workspace_id[:8]}\", user_query=\"...\")"
         )
 
-    template = f"{UNINITIALIZED_MARKER}\n# Project Brief — {display_name}\n\n(Waiting for initial scan... run `scan_workspace` to auto-generate the architecture brief)"
+    template = f"{UNINITIALIZED_MARKER}\n# Project Brief — {display_name}\n\n(Waiting for initial scan... run `scan_workspace` to auto-generate the architecture brief. Generation takes about 90 seconds.)"
     context_file.write_text(template, encoding="utf-8")
 
     return (
