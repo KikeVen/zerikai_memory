@@ -289,7 +289,7 @@ build/
 
 ### 2. Register a new project
 
-Tell your assistant:
+In a new chat session in your IDE, call the universal-brain MCP and ask:
 
 ```
 "Set up memory for this project"
