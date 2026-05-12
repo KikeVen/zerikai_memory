@@ -145,41 +145,45 @@ Configure via `MEMORY_MODE` in your `.env` file.
 
 | Mode | LLM Strategy | Best For |
 |---|---|---|
-| `local` | Ollama for everything | 100% privacy & \$0 cost |
-| `hybrid` | Ollama (scans/routine) + DeepSeek (architecture/briefs) | **Recommended.** Free local lookups, pro cloud reasoning. |
-| `cloud` | DeepSeek for everything | Maximum accuracy and project brief quality |
+| `cloud` | DeepSeek for everything | **Recommended. Cheaper, no Ollama needed, best brief quality.** |
+| `hybrid` | Ollama (scans/routine) + DeepSeek (architecture/briefs) | Privacy-sensitive users who want free local lookups |
+| `local` | Ollama for everything | 100% privacy & $0 cost, lower quality |
 
-**Recommendation:** Start with `hybrid` (You must have Ollama Installed). You get free lookups for the vast majority of queries and cloud-quality synthesis only when it matters.
+**Recommendation:** Start with `cloud`. You only need a DeepSeek API key -- no Ollama installation, no GPU requirements, no local model management. DeepSeek v4-flash is cheap ($0.14/M input tokens) and brief synthesis runs at ~$0.003 per full regeneration.
+
+**Get a DeepSeek API key at [platform.deepseek.com](https://platform.deepseek.com), then add it to `.env`:**
 
 ```.env
 DEEPSEEK_API_KEY=your_deepseek_key_here
 
 # Memory Mode:
-# - "cloud": DeepSeek for all operations (highest quality, tracked)
-# - "hybrid": Ollama for scans, DeepSeek for briefs/escalated queries
-# - "local": Ollama for everything (free, lower quality)
-MEMORY_MODE=hybrid
+# - "cloud": Use DeepSeek for all operations (scan, brief, queries) - highest quality, tracked usage
+# - "hybrid": Use Ollama for file scanning, DeepSeek for briefs and escalated queries
+# - "local": Use Ollama for everything (free, but lower quality briefs)
+MEMORY_MODE=cloud
 
-# Enable token tracking and cost reporting
+# Enable token tracking and cost reporting (SQLite database at .brain/zerikai.db)
 ENABLE_TOKEN_TRACKING=true
 
-# Enable deepseek-v4-pro for complex queries (architecture, design, tradeoffs)
-# v4-pro is 3x more expensive than v4-flash (6x after May 31, 2026)
-# Recommended: keep false unless you need maximum reasoning quality
+# Enable deepseek-v4-pro for complex architectural queries (design, architecture, tradeoffs)
+# v4-pro is 3x more expensive than v4-flash ($0.435/M vs $0.14/M input)
+# After May 31 2026, v4-pro will be 6x more expensive ($1.74/M vs $0.14/M)
+# Recommended: keep this "false" unless you need maximum reasoning capability
 ENABLE_DEEPSEEK_PRO=false
+
+# Semantic search relevance cutoff for query_memory (L2 distance).
+# Lower = stricter. Tune by watching "best dist=X.XX" in server.log.
+# Typical: <0.8 strong match, 0.8-1.5 related, >1.5 noise.
+QUERY_DISTANCE_THRESHOLD=1.0
 ```
 
-> **Note:** `OLLAMA_HOST` is optional. If your system has `OLLAMA_HOST=0.0.0.0` set (common on server installs), the server automatically corrects it to `http://127.0.0.1:11434` for client connections.
+> **Note:** `OLLAMA_HOST` is optional. If your system has `OLLAMA_HOST=0.0.0.0` set (common on server installs), the server corrects it to `http://127.0.0.1:11434` for client connections.
 
 ### Step 3 — Pull a local Ollama model (hybrid/local mode only)
 
 Download and install [Ollama](https://ollama.com) for your OS. Then pull a model:
 
-```bash
-ollama pull llama3.2
-```
-
-> Only required for `MEMORY_MODE=hybrid` or `MEMORY_MODE=local`.
+> Only required for `MEMORY_MODE=hybrid` or `MEMORY_MODE=local`. Not needed for cloud mode.
 
 ### Step 4 — Verify the installation
 
