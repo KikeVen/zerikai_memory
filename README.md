@@ -43,6 +43,8 @@ By storing compressed, semantically searchable summaries of your codebase and ar
 
 The server runs **entirely on your local machine**. Each IDE connects via STDIO to its own server process, with direct filesystem access for workspace scanning.
 
+---
+
 ### New Features - 2026-05-11
 
 - **Sources table**: Every `query_memory` response prepends a `## Sources` Markdown table with entity name, file, line, and semantic distance.
@@ -82,7 +84,7 @@ The AI assistant can resolve any workspace identifier: UUID, short-UUID, or disp
 
 ## Cost Savings Explained
 
-DeepSeek is invoked in three places: query synthesis (when auto-routed for long or architectural queries), brief synthesis (9 section calls totalling ~$0.003 per full regeneration), and file scanning when in cloud mode (~$0.000167 per file). In hybrid mode, routine queries and file scans run on Ollama at $0. The Project Brief is a fixed prefix across queries, so DeepSeek caches it at $0.0028/M tokens (hit) vs $0.14/M (miss), 50x cheaper after the first query. Code files are parsed locally by tree-sitter at zero API cost regardless of mode. All IDEs share the same .brain/ directory, so context saved in one is instantly available in another with no re-explanation cost. Every query_memory response includes a ## Sources Markdown table with entity name, file, line, and distance. This metadata is already stored during scanning at no extra API cost.
+DeepSeek is invoked in three places: query synthesis (when auto-routed for long or architectural queries), brief synthesis (9 section calls totalling ~\$0.003 per full regeneration), and file scanning when in cloud mode (~\$0.000167 per file). In hybrid mode, routine queries and file scans run on Ollama at \$0. The Project Brief is a fixed prefix across queries, so DeepSeek caches it at \$0.0028/M tokens (hit) vs \$0.14/M (miss), 50x cheaper after the first query. Code files are parsed locally by tree-sitter at zero API cost regardless of mode. All IDEs share the same .brain/ directory, so context saved in one is instantly available in another with no re-explanation cost. Every query_memory response includes a ## Sources Markdown table with entity name, file, line, and distance. This metadata is already stored during scanning at no extra API cost.
 
 ---
 
@@ -143,7 +145,7 @@ Configure via `MEMORY_MODE` in your `.env` file.
 
 | Mode | LLM Strategy | Best For |
 |---|---|---|
-| `local` | Ollama for everything | 100% privacy & $0 cost |
+| `local` | Ollama for everything | 100% privacy & \$0 cost |
 | `hybrid` | Ollama (scans/routine) + DeepSeek (architecture/briefs) | **Recommended.** Free local lookups, pro cloud reasoning. |
 | `cloud` | DeepSeek for everything | Maximum accuracy and project brief quality |
 
@@ -368,8 +370,8 @@ Routing is fully automatic based on query characteristics. You can override it e
 | Condition | Engine | Cost |
 |---|---|---|
 | Short, specific query | Ollama | Free |
-| Query ≥ 40 words | DeepSeek v4-flash | ~$0.028/M cached tokens |
-| Contains architectural keywords (`refactor`, `architect`, `design`, `audit`…) | DeepSeek v4-pro | ~$0.028/M cached tokens |
+| Query ≥ 40 words | DeepSeek v4-flash | ~\$0.028/M cached tokens |
+| Contains architectural keywords (`refactor`, `architect`, `design`, `audit`…) | DeepSeek v4-pro | ~\$0.028/M cached tokens |
 | `use_cloud=True` (explicit override) | DeepSeek | — |
 | `use_cloud=False` (explicit override) | Ollama | Free |
 
