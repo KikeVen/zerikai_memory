@@ -175,30 +175,48 @@ Configure via `MEMORY_MODE` in your `.env` file.
 ```.env
 DEEPSEEK_API_KEY=your_deepseek_key_here
 
-# Memory Mode:
+# Memory Mode controls which LLM is used for operations:
 # - "cloud": Use DeepSeek for all operations (scan, brief, queries) - highest quality, tracked usage
 # - "hybrid": Use Ollama for file scanning, DeepSeek for briefs and escalated queries
 # - "local": Use Ollama for everything (free, but lower quality briefs)
 MEMORY_MODE=cloud
 
-# Enable token tracking and cost reporting (SQLite database at .brain/zerikai.db)
+# Enable token tracking and cost reporting (SQLite database at .brain/token_usage.db)
+# Set to "false" to disable tracking
 ENABLE_TOKEN_TRACKING=true
 
 # Enable deepseek-v4-pro for complex architectural queries (design, architecture, tradeoffs)
-# v4-pro is 3x more expensive than v4-flash ($0.435/M vs $0.14/M input)
+# v4-pro is 3x more expensive than v4-flash (currently $0.435/M vs $0.14/M input)
 # After May 31 2026, v4-pro will be 6x more expensive ($1.74/M vs $0.14/M)
 # Recommended: keep this "false" unless you need maximum reasoning capability
 ENABLE_DEEPSEEK_PRO=false
 
 # Semantic search relevance cutoff for query_memory (L2 distance).
-# Lower = stricter. Tune by watching "best dist=X.XX" in server.log.
+# Lower = stricter. Watch "best dist=X.XX" in server.log to calibrate.
 # Typical: <0.8 strong match, 0.8-1.5 related, >1.5 noise.
 QUERY_DISTANCE_THRESHOLD=1.0
 
-# Skip .py files with no functions/classes (admin.py, urls.py, settings.py)
-# instead of sending them to DeepSeek for LLM summarisation.
-# Default: false (all files are summarised). Set to "true" to skip.
+# When True, .py files that produce zero tree-sitter entities (no functions or
+# classes found) are skipped during scanning instead of sent to DeepSeek for
+# LLM summarisation. Saves API calls on files like admin.py, urls.py, settings.py,
+# wsgi.py that have only variable assignments and module-level code.
+# Default: false (existing behaviour — all such files are LLM-summarised).
+# Set to "true" to skip them.
 SKIP_BARE_PY_FILES=false
+
+# Enable lexical re-ranking in query_memory.
+# When true, results passing the distance threshold are reordered by a
+# weighted combination of semantic distance and keyword overlap in entity
+# name and docstring text. Nothing is dropped — pure reorder.
+# Default: false (existing pure-semantic behaviour preserved).
+ENABLE_LEXICAL_RERANK=false
+
+# Weight applied per keyword hit during lexical re-ranking.
+# The 1/dist spread across the valid-hit band (0.85–0.98) is ~0.156.
+# Keep this value below that spread to avoid keyword hits overriding
+# a genuinely closer semantic result.
+# Recommended starting point: 0.05 (one hit = +0.05, two hits = +0.10).
+LEXICAL_RERANK_WEIGHT=0.05
 ```
 
 > **Note:** `OLLAMA_HOST` is optional. If your system has `OLLAMA_HOST=0.0.0.0` set (common on server installs), the server corrects it to `http://127.0.0.1:11434` for client connections.
