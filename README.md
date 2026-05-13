@@ -47,19 +47,19 @@ The server runs **entirely on your local machine**. Each IDE connects via STDIO 
 
 ### New Updates 2026-05-13
 
-- **Lexical re-ranking in `query_memory`:** New hybrid search step: after semantic retrieval, results are reordered by keyword overlap in entity names and docstrings. Solves false positives where functions with shared vocabulary (e.g. "tree-sitter", "extract") crowd out the correct match. `ENABLE_LEXICAL_RERANK=true` activates it; `LEXICAL_RERANK_WEIGHT` (default 0.05) controls boost per keyword hit. Pure reorder — nothing dropped. Default off.
+- **Lexical re-ranking in `query_memory`:** New hybrid search step: after semantic retrieval, results are reordered by keyword overlap in entity names and docstrings. Solves false positives where functions with shared vocabulary (e.g. "tree-sitter", "extract") crowd out the correct match. `ENABLE_LEXICAL_RERANK=true` activates it; `LEXICAL_RERANK_WEIGHT` (default 0.05) controls boost per keyword hit. Pure reorder, nothing dropped. Default off.
 - **Agent-aware tool descriptions:** All 15 MCP tool docstrings reviewed and tuned for AI agent consumption (Copilot, Claude Desktop, Antigravity). Agents now receive priority directives, anti-pattern hints, and "when not to use" guidance directly in the tool schema, reducing trial-and-error probing.
-- **`save_to_memory` docstring rewritten:** Leads with use-case semantics (*"Manually save an architectural decision, fact, or technical note"*) instead of implementation details. Adds explicit routing hint: *"it's not for code files — `scan_workspace` handles those."*
-- **Priority directives now explicit:** `get_brief` says *"Use this FIRST on any new workspace."* `query_memory` says *"Use this BEFORE reasoning from priors."* `list_memory` warns *"not to answer code questions — use `query_memory`."* `resolve_workspace` identifies itself as *"a helper tool for agents that don't have filesystem context."*
+- **`save_to_memory` docstring rewritten:** Leads with use-case semantics (*"Manually save an architectural decision, fact, or technical note"*) instead of implementation details. Adds explicit routing hint: *"it's not for code files, `scan_workspace` handles those."*
+- **Priority directives now explicit:** `get_brief` says *"Use this FIRST on any new workspace."* `query_memory` says *"Use this BEFORE reasoning from priors."* `list_memory` warns *"not to answer code questions, use `query_memory`."* `resolve_workspace` identifies itself as *"a helper tool for agents that don't have filesystem context."*
 - **Irreversible operations flagged:** `merge_workspaces` and `purge_usage_data` both carry a *"Cannot be undone"* warning visible to the agent before execution.
 
 ### New Updates 2026-05-12
 
-- **Parallel brief synthesis:** All 9 brief sections now fire simultaneously via `asyncio.gather`. Brief generation dropped _from ~90 seconds to ~20-30 seconds_.
+- **Parallel brief synthesis:** All 9 brief sections now fire simultaneously via `asyncio.gather`. Brief generation dropped *from ~90 seconds to ~20-30 seconds*.
 - Skip bare `.py` files: New `SKIP_BARE_PY_FILES` toggle in `.env`. Skips `.py` files with no functions or classes (`admin.py`, `urls.py`, `settings.py`) to avoid DeepSeek calls on boilerplate.
  Default off.
 - **HTML comment indexing:** _extract_html now captures `<!-- -->` comments as docstrings for the elements that follow. Comments are searchable and appear in the Sources table.
-- **Embedding-docstring skill:** Updated to cover HTML comments in addition to _Python_, _JavaScript_, and _TypeScript_ docstrings.
+- **Embedding-docstring skill:** Updated to cover HTML comments in addition to *Python*, *JavaScript*, and *TypeScript* docstrings.
 - **Brief timing corrected:** Status messages updated from "about 90 seconds" to "about 20 seconds."
 - **Primary Conventions prompt tightened:** Briefs no longer include filler sections like Naming Conventions or Testing infrastructure.
 - **use_cloud default:** `synthesize_deep_brief` now defaults to cloud mode.
@@ -374,12 +374,12 @@ The assistant calls `scan_workspace(force_refresh_brief=True)`.
 
 | You say | What happens |
 |---|---|
-| _"Remember that we're using Redis for session caching"_ | `save_to_memory` is called |
-| _"What did we decide about auth?"_ | `query_memory` → Ollama (local, instant) |
-| _"Refactor the data layer, what are our constraints?"_ | `query_memory` → DeepSeek (auto-escalated) |
-| _"List what's in memory for this project"_ | `list_memory` |
-| _"What projects do you know about?"_ | `list_workspaces` |
-| _"Show me the project brief."_ | `get_brief` → displays `.brain/contexts/<id>.md` |
+| *"Remember that we're using Redis for session caching"* | `save_to_memory` is called |
+| *"What did we decide about auth?"* | `query_memory` → Ollama (local, instant) |
+| *"Refactor the data layer, what are our constraints?"* | `query_memory` → DeepSeek (auto-escalated) |
+| *"List what's in memory for this project"* | `list_memory` |
+| *"What projects do you know about?"* | `list_workspaces` |
+| *"Show me the project brief."* | `get_brief` → displays `.brain/contexts/<id>.md` |
 
 ### Retrieve the project brief
 
