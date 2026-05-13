@@ -706,7 +706,8 @@ async def _background_brief_synthesis(workspace_id: str, display_name: str, cont
         context_file.write_text(new_brief, encoding="utf-8")
         log.info("_background_brief_synthesis | brief saved for %s", display_name)
     except Exception as exc:
-        log.error("_background_brief_synthesis | failed for %s: %s", display_name, exc)
+        log.error("_background_brief_synthesis | failed for %s: %s",
+                  display_name, exc)
 
 
 def _get_collection(workspace_id: str):
@@ -904,10 +905,10 @@ def _select_model(user_query: str) -> str:
 
 @mcp.tool()
 async def init_workspace(workspace_path: str) -> str:
-    """Scaffolds a project brief via _derive_workspace_id (sqlite3
-    registry). Creates a placeholder in .brain/contexts/<id>.md
-    awaiting scan_workspace. Idempotent on re-call. Registers
-    workspace in zerikai.db.
+    """
+    Initializes a new workspace and registers it in the database.
+    Run this once before scan_workspace on a new project.
+    Idempotent — safe to re-call.
 
     Args:
         workspace_path: Absolute path to the project root.
@@ -1186,8 +1187,13 @@ async def query_memory(
     show_sources: bool = True,
 ) -> str:
     """
-    Retrieves relevant context from this workspace's memory and synthesises
-    an answer via Ollama (local) or DeepSeek (cloud).
+
+    Query the indexed codebase memory for this workspace. Use this BEFORE
+    reasoning from priors on any question about code location, architecture,
+    function behavior, or file structure. Returns a synthesized answer grounded
+    in the actual codebase — not training data — followed by a pre-formatted
+    markdown sources table showing file path, line number, and L2 distance.
+    Render the sources table as-is, do not reconstruct it.
 
     Routing is automatic:
       - Short, specific queries  → Ollama (free, instant)
@@ -1200,10 +1206,8 @@ async def query_memory(
         category:   Optional filter to scope results by tag.
         use_cloud:  True = force DeepSeek. False = force Ollama.
                     None = auto-route (recommended).
-        show_sources: If True (default), appends a structured sources block
-                      (file:line — entity name) after the answer and enriches
-                      the LLM context with location markers. Set to False for
-                      cleaner output without file references.
+        show_sources: If True (default), appends a pre-formatted markdown
+                      sources table after the answer. Render it as-is.
     """
     try:
         workspace_id, display_name, workspace_path = _resolve_workspace(
@@ -1384,7 +1388,9 @@ async def list_memory(
     limit: int = 10,
 ) -> str:
     """
-    Lists stored memories for this workspace, optionally filtered by category.
+    Lists raw stored memory entries for this workspace.
+    Use this to audit what has been indexed, not to answer code questions
+    — use query_memory for that.
 
     Args:
         workspace: Workspace identifier (UUID, short UUID, or display name).
@@ -1564,8 +1570,8 @@ async def resolve_workspace(identifier: str) -> str:
 @mcp.tool()
 async def update_brief(workspace: str, new_content: str) -> str:
     """
-    Updates the project brief for a workspace.
-    Use this to keep the project context current as the architecture evolves.
+    Replaces the project brief for a workspace with new markdown content.
+    Use after significant architectural changes or when the brief is stale.
 
     Args:
         workspace:   Workspace identifier (UUID, short UUID, or display name).
@@ -1591,7 +1597,8 @@ async def update_brief(workspace: str, new_content: str) -> str:
 async def get_brief(workspace: str) -> str:
     """
     Retrieves the current project brief for a workspace.
-    Use this to review the synthesized project context and architecture overview.
+    Use this FIRST on any new workspace to understand architecture,
+    stack, and conventions before querying or modifying anything.
 
     Args:
         workspace: Workspace identifier (UUID, short UUID, or display name).
@@ -1638,7 +1645,8 @@ async def scan_workspace(
     Args:
         workspace:  Workspace identifier (UUID, short UUID, or display name).
         category:   Tag applied to every saved memory (default 'codebase').
-        force_refresh_brief: If True, forces the synthesis of a new project brief.
+        force_refresh_brief: If True, forces a new brief synthesis after
+                             scanning. Use when architecture has changed.
     """
     workspace_id, display_name, workspace_path = _resolve_workspace(workspace)
     workspace_root = Path(workspace_path)
@@ -1759,7 +1767,8 @@ async def scan_workspace(
             # Avoids DeepSeek calls on files like admin.py, urls.py, settings.py.
             if SKIP_BARE_PY_FILES and ext == ".py":
                 skipped += 1
-                log.info("scan_workspace | skipped bare .py (no entities): %s", rel_path)
+                log.info(
+                    "scan_workspace | skipped bare .py (no entities): %s", rel_path)
                 continue
 
             # -------------------------------------------------------------------
@@ -1824,7 +1833,8 @@ async def scan_workspace(
     trigger_brief = False
 
     if context_file.exists():
-        current_text = context_file.read_text(encoding="utf-8", errors="ignore")
+        current_text = context_file.read_text(
+            encoding="utf-8", errors="ignore")
         if force_refresh_brief or (UNINITIALIZED_MARKER in current_text):
             trigger_brief = True
             brief_status = "In progress (background, about 20 seconds)"
@@ -1834,8 +1844,10 @@ async def scan_workspace(
 
     if trigger_brief:
         context_dir.mkdir(parents=True, exist_ok=True)
-        log.info("scan_workspace | triggering background brief synthesis for %s", display_name)
-        asyncio.create_task(_background_brief_synthesis(workspace_id, display_name, context_file))
+        log.info(
+            "scan_workspace | triggering background brief synthesis for %s", display_name)
+        asyncio.create_task(_background_brief_synthesis(
+            workspace_id, display_name, context_file))
 
     stats = (
         f"Scan complete for `{display_name}`\n"
