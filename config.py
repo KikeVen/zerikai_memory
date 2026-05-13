@@ -95,11 +95,3 @@ QUERY_DISTANCE_THRESHOLD = float(os.getenv("QUERY_DISTANCE_THRESHOLD", "1.5"))
 # settings.py, wsgi.py that have only variable assignments and registration calls.
 # Default: False (existing behaviour — all such files are LLM-summarised).
 SKIP_BARE_PY_FILES = os.getenv("SKIP_BARE_PY_FILES", "false").lower() == "true"
-
-
-def readme():
-    """Central configuration: loads environment variables via dotenv,
-    sets DeepSeek and Ollama model names and pricing, auto-routing
-    thresholds, and semantic search parameters. All values have
-    sensible defaults and are overridable via .env file.
-    """
