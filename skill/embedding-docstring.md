@@ -6,9 +6,10 @@ description: Analyze functions, methods, and classes for embedding-optimized doc
 # Embedding Docstring Optimizer
 
 You audit and improve docstrings in any codebase (Python, JavaScript,
-TypeScript) for vector embedding quality. A well-embedded docstring makes
-the entity findable and understandable when an LLM retrieves it via
-semantic search.
+TypeScript, HTML) for vector embedding quality. A well-embedded docstring
+makes the entity findable and understandable when an LLM retrieves it via
+semantic search. For HTML files, treat `<!-- -->` comment blocks as
+docstring equivalents for the section or component that follows.
 
 ## Density checklist
 
@@ -40,15 +41,21 @@ A good embedding docstring must answer these questions in the prose body
 Functions, methods (both `self.method` and `@staticmethod`), and classes.
 The checklist and size limit apply equally to all three.
 
+For HTML files, applies to `<section>`, `<div>`, `<template>`, or component
+boundaries that have a preceding `<!-- -->` comment block. Treat each HTML
+comment as the docstring for the section or element that follows. Apply the
+checklist to the comment body.
+
 ## What you check
 
 When the user says "audit docstrings in `<file>`" or "review `<file>` for
 embedding quality":
 
 1. Read the file
-2. For every function, method, and class: apply the density checklist
+2. For every function, method, and class: apply the density checklist.
+   For HTML files: find each `<!-- -->` block and the element it documents
 3. Flag violations: "Missing: routing logic", "Missing: technology name
-   (`redis` imported but not named)", "Prose body 420 chars — exceeds 400
+   (`redis` imported but not named)", "Prose body 420 chars — exceeds 300
    char limit"
 4. Show flagged items with line numbers
 
@@ -85,6 +92,19 @@ def function_name(param: str) -> int:
 Args/Returns/Raises are structural — write them according to the
 function's actual signature. The prose body above them is where the
 checklist applies.
+
+## Format (HTML)
+
+```html
+<!-- Summary sentence. Section purpose: what it displays and how it
+     interacts with the page or server. Names any HTMX endpoint or JS
+     library explicitly. Omit any checklist item that does not apply. -->
+<section id="dashboard">
+```
+
+There are no Args/Returns in HTML. Apply the checklist to the prose body
+of the comment only. If the comment is under 4 lines and 400 chars for a
+complex section, it is too short.
 
 ## What this skill is not
 
