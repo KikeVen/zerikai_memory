@@ -32,6 +32,7 @@ from config import (
     OLLAMA_HOST,
     OLLAMA_MODEL,
     QUERY_DISTANCE_THRESHOLD,
+    SKIP_BARE_PY_FILES,
     SYNTHESIZE_WITH_CLOUD,
     ZERIKAI_DB,
 )
@@ -414,6 +415,83 @@ def _truncate_for_brief(doc: str) -> str:
     return result
 
 
+async def _build_section(
+    section: dict,
+    collection,
+    display_name: str,
+    use_cloud: bool,
+    workspace_id: str,
+) -> tuple[str, str]:
+    """Build one brief section: query ChromaDB, build context, call LLM.
+    Runs independently so all 9 sections can fire in parallel.
+    Returns (heading, content) on success, (heading, error) on failure.
+    """
+    heading = section["heading"]
+    log.info("_synthesize_deep_brief | Generating: %s", heading)
+
+    try:
+        with _db_lock:
+            total_docs = collection.count()
+            fetch_count = min(75, total_docs) if total_docs > 0 else 1
+            results = collection.query(
+                query_texts=[section["query"]],
+                n_results=fetch_count,
+                where={"category": "codebase"},
+            )
+
+        docs = results.get("documents", [[]])[0]
+        metas = results.get("metadatas", [[]])[0]
+        if not docs:
+            with _db_lock:
+                fallback = collection.get(
+                    where={"category": "codebase"}, limit=fetch_count)
+            docs = fallback.get("documents", [])
+            metas = fallback.get("metadatas", [])
+
+        context_parts = []
+        for doc, meta in zip(docs, metas or [{}] * len(docs)):
+            if (meta or {}).get("source_type") == "manual":
+                continue
+            src = (meta or {}).get("source_file", "")
+            header = f"### {src}\n" if src else ""
+            context_parts.append(f"{header}{_truncate_for_brief(doc)}")
+        context = "\n\n".join(context_parts)
+        prompt = section["prompt_template"].format(context=context)
+
+        if use_cloud:
+            response = await asyncio.to_thread(
+                ds_client.chat.completions.create,
+                model=DEEPSEEK_MODEL_FAST,
+                messages=[
+                    {"role": "system",
+                        "content": "You are a senior software architect."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0,
+                max_tokens=2048,
+            )
+            content = response.choices[0].message.content.strip()
+            usage = getattr(response, "usage", None)
+            if usage:
+                _track_token_usage(
+                    workspace_id, "brief_synthesis", DEEPSEEK_MODEL_FAST, usage)
+        else:
+            result = await asyncio.to_thread(
+                ol_client.generate,
+                model=OLLAMA_MODEL,
+                prompt=prompt,
+                options={"temperature": 0},
+            )
+            content = result["response"].strip()
+
+        log.info("_synthesize_deep_brief | \u2713 %s complete", heading)
+        return (heading, content)
+
+    except Exception as exc:
+        log.error("_synthesize_deep_brief | Failed on %s: %s", heading, exc)
+        return (heading, f"(Section generation failed: {exc})")
+
+
 async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud: bool = True) -> str:
     """Iteratively builds a 9-section project brief by querying
     ChromaDB with section-specific searches, feeding ~10-15
@@ -602,87 +680,15 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
         },
     ]
 
+    tasks = [
+        _build_section(s, collection, display_name, use_cloud, workspace_id)
+        for s in sections
+    ]
+    results = await asyncio.gather(*tasks)
+
     brief_parts = [f"# Project Brief: {display_name}\n"]
-
-    for section in sections:
-        log.info("_synthesize_deep_brief | Generating: %s", section["heading"])
-
-        # Semantic search for section-specific context
-        with _db_lock:
-            total_docs = collection.count()
-            fetch_count = min(75, total_docs) if total_docs > 0 else 1
-            results = collection.query(
-                query_texts=[section["query"]],
-                n_results=fetch_count,
-                where={"category": "codebase"},
-            )
-
-        docs = results.get("documents", [[]])[0]
-        metas = results.get("metadatas", [[]])[0]
-        if not docs:
-            # Fallback: grab any available context
-            with _db_lock:
-                fallback = collection.get(
-                    where={"category": "codebase"}, limit=fetch_count)
-            docs = fallback.get("documents", [])
-            metas = fallback.get("metadatas", [])
-
-        # Re-attach filenames stripped by Ollama summarisation.
-        # source_file is stored in metadata by save_to_memory; without it the
-        # "Key Files & Directories" prompt has no paths to extract and returns empty.
-        #
-        # Skip source_type="manual" entries (chat snippets, pasted code) — their
-        # synthetic filenames would hallucinate non-existent files into the brief.
-        context_parts = []
-        for doc, meta in zip(docs, metas or [{}] * len(docs)):
-            if (meta or {}).get("source_type") == "manual":
-                continue
-            src = (meta or {}).get("source_file", "")
-            header = f"### {src}\n" if src else ""
-            context_parts.append(f"{header}{_truncate_for_brief(doc)}")
-        context = "\n\n".join(context_parts)
-        prompt = section["prompt_template"].format(context=context)
-
-        try:
-            if use_cloud:
-                # Use DeepSeek for high-quality synthesis
-                response = await asyncio.to_thread(
-                    ds_client.chat.completions.create,
-                    model=DEEPSEEK_MODEL_FAST,
-                    messages=[
-                        {"role": "system",
-                            "content": "You are a senior software architect."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0,
-                    max_tokens=2048,
-                )
-                section_content = response.choices[0].message.content.strip()
-
-                # Track token usage for brief synthesis
-                usage = getattr(response, "usage", None)
-                if usage:
-                    _track_token_usage(
-                        workspace_id, "brief_synthesis", DEEPSEEK_MODEL_FAST, usage)
-            else:
-                # Use Ollama for free local synthesis
-                result = await asyncio.to_thread(
-                    ol_client.generate,
-                    model=OLLAMA_MODEL,
-                    prompt=prompt,
-                    options={"temperature": 0},
-                )
-                section_content = result["response"].strip()
-
-            brief_parts.append(
-                f"\n{section['heading']}\n\n{section_content}\n")
-            log.info("_synthesize_deep_brief | ✓ %s complete",
-                     section["heading"])
-        except Exception as exc:
-            log.error("_synthesize_deep_brief | Failed on %s: %s",
-                      section["heading"], exc)
-            brief_parts.append(
-                f"\n{section['heading']}\n\n(Section generation failed: {exc})\n")
+    for heading, content in results:
+        brief_parts.append(f"\n{heading}\n\n{content}\n")
 
     final_brief = "".join(brief_parts)
     log.info("_synthesize_deep_brief | Complete for %s", workspace_id)
@@ -920,7 +926,7 @@ async def init_workspace(workspace_path: str) -> str:
             f"  query_memory(workspace=\"{workspace_id[:8]}\", user_query=\"...\")"
         )
 
-    template = f"{UNINITIALIZED_MARKER}\n# Project Brief — {display_name}\n\n(Waiting for initial scan... run `scan_workspace` to auto-generate the architecture brief. Generation takes about 90 seconds.)"
+    template = f"{UNINITIALIZED_MARKER}\n# Project Brief — {display_name}\n\n(Waiting for initial scan... run `scan_workspace` to auto-generate the architecture brief. Generation takes about 20 seconds.)"
     context_file.write_text(template, encoding="utf-8")
 
     return (
@@ -1015,6 +1021,9 @@ async def save_to_memory(
                     f"({category}): {entities[0].signature[:100]}..."
                 )
             # If tree-sitter found nothing (empty file, unsupported constructs),
+            # skip bare .py files when configured to avoid DeepSeek calls.
+            if SKIP_BARE_PY_FILES and ext == ".py":
+                return f"[{workspace_id}] Skipped bare .py (no entities): {source_id}"
             # fall through to the generic summary path below.
 
         # ---------------------------------------------------------------------------
@@ -1746,6 +1755,13 @@ async def scan_workspace(
                     )
                     continue  # skip the chunk-based path below
 
+            # Skip bare .py files with no functions/classes when configured.
+            # Avoids DeepSeek calls on files like admin.py, urls.py, settings.py.
+            if SKIP_BARE_PY_FILES and ext == ".py":
+                skipped += 1
+                log.info("scan_workspace | skipped bare .py (no entities): %s", rel_path)
+                continue
+
             # -------------------------------------------------------------------
             # Non-code files: keep existing chunking + LLM summarization
             # -------------------------------------------------------------------
@@ -1811,10 +1827,10 @@ async def scan_workspace(
         current_text = context_file.read_text(encoding="utf-8", errors="ignore")
         if force_refresh_brief or (UNINITIALIZED_MARKER in current_text):
             trigger_brief = True
-            brief_status = "In progress (background)"
+            brief_status = "In progress (background, about 20 seconds)"
     elif saved > 0:
         trigger_brief = True
-        brief_status = "In progress (background)"
+        brief_status = "In progress (background, about 20 seconds)"
 
     if trigger_brief:
         context_dir.mkdir(parents=True, exist_ok=True)

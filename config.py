@@ -23,11 +23,12 @@ DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 # Swap to deepseek-v4-pro for maximum reasoning on complex architectural queries.
 # NOTE: deepseek-chat / deepseek-reasoner are legacy aliases retiring July 24 2026.
 DEEPSEEK_MODEL_FAST = "deepseek-v4-flash"
-DEEPSEEK_MODEL_PRO  = "deepseek-v4-pro"
+DEEPSEEK_MODEL_PRO = "deepseek-v4-pro"
 
 # Enable deepseek-v4-pro for complex queries (architecture, design, tradeoffs)
 # If False, always uses v4-flash (cheaper, 3x cost savings now, 6x after May 31 2026)
-ENABLE_DEEPSEEK_PRO = os.getenv("ENABLE_DEEPSEEK_PRO", "false").lower() == "true"
+ENABLE_DEEPSEEK_PRO = os.getenv(
+    "ENABLE_DEEPSEEK_PRO", "false").lower() == "true"
 
 # Local Ollama model for summarisation (always free, always local)
 OLLAMA_MODEL = "llama3.2:latest"
@@ -45,7 +46,8 @@ DB_PATH = Path(__file__).parent / ".brain"
 
 # Database configuration
 # zerikai.db stores token tracking, workspace registry, and other persistent state
-ENABLE_TOKEN_TRACKING = os.getenv("ENABLE_TOKEN_TRACKING", "true").lower() == "true"
+ENABLE_TOKEN_TRACKING = os.getenv(
+    "ENABLE_TOKEN_TRACKING", "true").lower() == "true"
 ZERIKAI_DB = DB_PATH / "zerikai.db"
 
 # DeepSeek pricing (USD per 1M tokens) - verified May 1, 2026
@@ -86,3 +88,18 @@ CLOUD_ESCALATION_KEYWORDS = {
 # Tune this by watching "best dist=X.XX" in server.log.
 # Typical ranges: <0.8 strong match, 0.8-1.5 related, >1.5 noise.
 QUERY_DISTANCE_THRESHOLD = float(os.getenv("QUERY_DISTANCE_THRESHOLD", "1.5"))
+
+# When True, .py files that produce zero tree-sitter entities (no functions or
+# classes found) are skipped during scanning instead of falling through to LLM
+# summarisation. Saves DeepSeek API calls on files like admin.py, urls.py,
+# settings.py, wsgi.py that have only variable assignments and registration calls.
+# Default: False (existing behaviour — all such files are LLM-summarised).
+SKIP_BARE_PY_FILES = os.getenv("SKIP_BARE_PY_FILES", "false").lower() == "true"
+
+
+def readme():
+    """Central configuration: loads environment variables via dotenv,
+    sets DeepSeek and Ollama model names and pricing, auto-routing
+    thresholds, and semantic search parameters. All values have
+    sensible defaults and are overridable via .env file.
+    """

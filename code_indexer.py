@@ -911,63 +911,76 @@ def _extract_html(
     semantic_tags = {"main", "header", "footer", "section", "article", "nav", "aside"}
 
     def _walk(node: Node):
-        for child in node.named_children:
-            if child.type in ("element", "script_element", "style_element"):
-                tag_name = ""
-                element_id = ""
+        pending_comment = None
+        for child in node.children:
+            # Collect HTML comments as docstrings for the next element
+            if child.type == "comment":
+                pending_comment = child.text.decode("utf-8").strip()
+                continue
 
-                start_tag = None
-                for c in child.named_children:
-                    if c.type == "start_tag":
-                        start_tag = c
-                        break
+            if child.type not in ("element", "script_element", "style_element"):
+                _walk(child)
+                continue
 
-                if start_tag:
-                    for c in start_tag.named_children:
-                        if c.type == "tag_name":
-                            tag_name = c.text.decode("utf-8")
-                        elif c.type == "attribute":
-                            attr_name = ""
-                            attr_val = ""
-                            for ac in c.named_children:
-                                if ac.type == "attribute_name":
-                                    attr_name = ac.text.decode("utf-8")
-                                elif ac.type == "quoted_attribute_value":
-                                    attr_val = ac.text.decode("utf-8").strip("\"'")
-                            if attr_name == "id":
-                                element_id = attr_val
+            tag_name = ""
+            element_id = ""
 
-                should_extract = False
-                if child.type in ("script_element", "style_element"):
-                    should_extract = True
-                elif tag_name in semantic_tags:
-                    should_extract = True
-                elif element_id:
-                    should_extract = True
+            start_tag = None
+            for c in child.named_children:
+                if c.type == "start_tag":
+                    start_tag = c
+                    break
 
-                if should_extract:
-                    name = f"<{tag_name}>" if tag_name else f"<{child.type}>"
-                    if element_id:
-                        name += f" #{element_id}"
+            if start_tag:
+                for c in start_tag.named_children:
+                    if c.type == "tag_name":
+                        tag_name = c.text.decode("utf-8")
+                    elif c.type == "attribute":
+                        attr_name = ""
+                        attr_val = ""
+                        for ac in c.named_children:
+                            if ac.type == "attribute_name":
+                                attr_name = ac.text.decode("utf-8")
+                            elif ac.type == "quoted_attribute_value":
+                                attr_val = ac.text.decode("utf-8").strip("\"'")
+                        if attr_name == "id":
+                            element_id = attr_val
 
-                    text = child.text.decode("utf-8")
-                    entities.append(CodeEntity(
-                        entity_type=child.type,
-                        name=name,
-                        signature=f"HTML Element: {name}",
-                        docstring=None,
-                        document_text=text,
-                        file_path=file_path,
-                        language=config.display_name,
-                        lineno=child.start_point[0] + 1,
-                        end_lineno=child.end_point[0] + 1,
-                        parent_class=None,
-                        decorators=[],
-                        params=[],
-                        return_type=None,
-                    ))
+            should_extract = False
+            if child.type in ("script_element", "style_element"):
+                should_extract = True
+            elif tag_name in semantic_tags:
+                should_extract = True
+            elif element_id:
+                should_extract = True
 
-            # Recurse to find nested ids or semantic tags
+            if should_extract:
+                name = f"<{tag_name}>" if tag_name else f"<{child.type}>"
+                if element_id:
+                    name += f" #{element_id}"
+
+                text = child.text.decode("utf-8")
+                docstring = None
+                if pending_comment:
+                    docstring = pending_comment.strip("<!--").strip("-->").strip()
+                    pending_comment = None
+
+                entities.append(CodeEntity(
+                    entity_type=child.type,
+                    name=name,
+                    signature=f"HTML Element: {name}",
+                    docstring=docstring,
+                    document_text=f"{name}\n{docstring}" if docstring else text,
+                    file_path=file_path,
+                    language=config.display_name,
+                    lineno=child.start_point[0] + 1,
+                    end_lineno=child.end_point[0] + 1,
+                    parent_class=None,
+                    decorators=[],
+                    params=[],
+                    return_type=None,
+                ))
+
             _walk(child)
 
     _walk(root)

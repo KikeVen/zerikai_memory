@@ -45,7 +45,18 @@ The server runs **entirely on your local machine**. Each IDE connects via STDIO 
 
 ---
 
-### New Features - 2026-05-11
+### New Updates 2026-05-12
+
+- Parallel brief synthesis — All 9 brief sections now fire simultaneously via asyncio.gather. Brief generation dropped from ~90 seconds to ~20-30 seconds.
+- Skip bare .py files — New SKIP_BARE_PY_FILES toggle in .env. Skips .py files with no functions or classes (admin.py, urls.py, settings.py) to avoid DeepSeek calls on boilerplate.
+ Default off.
+- HTML comment indexing — _extract_html now captures <!-- --> comments as docstrings for the elements that follow. Comments are searchable and appear in the Sources table.
+- Embedding-docstring skill — Updated to cover HTML comments in addition to Python, JavaScript, and TypeScript docstrings.
+- Brief timing corrected — Status messages updated from "about 90 seconds" to "about 20 seconds."
+- Primary Conventions prompt tightened — Briefs no longer include filler sections like Naming Conventions or Testing infrastructure.
+- use_cloud default —_synthesize_deep_brief now defaults to cloud mode.
+
+### Update - 2026-05-11
 
 - **Sources table**: Every `query_memory` response prepends a `## Sources` Markdown table with entity name, file, line, and semantic distance.
 - **Full docstrings embedded**: `_clean_docstring` no longer truncates to first sentence; the LLM sees complete function descriptions for richer answers.
@@ -175,6 +186,11 @@ ENABLE_DEEPSEEK_PRO=false
 # Lower = stricter. Tune by watching "best dist=X.XX" in server.log.
 # Typical: <0.8 strong match, 0.8-1.5 related, >1.5 noise.
 QUERY_DISTANCE_THRESHOLD=1.0
+
+# Skip .py files with no functions/classes (admin.py, urls.py, settings.py)
+# instead of sending them to DeepSeek for LLM summarisation.
+# Default: false (all files are summarised). Set to "true" to skip.
+SKIP_BARE_PY_FILES=false
 ```
 
 > **Note:** `OLLAMA_HOST` is optional. If your system has `OLLAMA_HOST=0.0.0.0` set (common on server installs), the server corrects it to `http://127.0.0.1:11434` for client connections.
