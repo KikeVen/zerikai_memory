@@ -47,14 +47,14 @@ The server runs **entirely on your local machine**. Each IDE connects via STDIO 
 
 ### New Updates 2026-05-12
 
-- Parallel brief synthesis — All 9 brief sections now fire simultaneously via asyncio.gather. Brief generation dropped from ~90 seconds to ~20-30 seconds.
-- Skip bare .py files — New SKIP_BARE_PY_FILES toggle in .env. Skips .py files with no functions or classes (admin.py, urls.py, settings.py) to avoid DeepSeek calls on boilerplate.
+- **Parallel brief synthesis:** All 9 brief sections now fire simultaneously via `asyncio.gather`. Brief generation dropped _from ~90 seconds to ~20-30 seconds_.
+- Skip bare `.py` files: New `SKIP_BARE_PY_FILES` toggle in `.env`. Skips `.py` files with no functions or classes (`admin.py`, `urls.py`, `settings.py`) to avoid DeepSeek calls on boilerplate.
  Default off.
-- HTML comment indexing — _extract_html now captures <!-- --> comments as docstrings for the elements that follow. Comments are searchable and appear in the Sources table.
-- Embedding-docstring skill — Updated to cover HTML comments in addition to Python, JavaScript, and TypeScript docstrings.
-- Brief timing corrected — Status messages updated from "about 90 seconds" to "about 20 seconds."
-- Primary Conventions prompt tightened — Briefs no longer include filler sections like Naming Conventions or Testing infrastructure.
-- use_cloud default —_synthesize_deep_brief now defaults to cloud mode.
+- **HTML comment indexing:** _extract_html now captures `<!-- -->` comments as docstrings for the elements that follow. Comments are searchable and appear in the Sources table.
+- **Embedding-docstring skill:** Updated to cover HTML comments in addition to _Python_, _JavaScript_, and _TypeScript_ docstrings.
+- **Brief timing corrected:** Status messages updated from "about 90 seconds" to "about 20 seconds."
+- **Primary Conventions prompt tightened:** Briefs no longer include filler sections like Naming Conventions or Testing infrastructure.
+- **use_cloud default:** `synthesize_deep_brief` now defaults to cloud mode.
 
 ### Update - 2026-05-11
 
@@ -132,7 +132,7 @@ zerikai_memory/
 
 ## Installation
 
-### Step 1 — Clone and create the virtual environment
+### Step 1: Clone and create the virtual environment
 
 ```bash
 git clone https://github.com/your-username/zerikai_memory.git
@@ -150,7 +150,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Step 2 — Configure `.env`
+### Step 2: Configure `.env`
 
 Configure via `MEMORY_MODE` in your `.env` file.
 
@@ -195,13 +195,13 @@ SKIP_BARE_PY_FILES=false
 
 > **Note:** `OLLAMA_HOST` is optional. If your system has `OLLAMA_HOST=0.0.0.0` set (common on server installs), the server corrects it to `http://127.0.0.1:11434` for client connections.
 
-### Step 3 — Pull a local Ollama model (hybrid/local mode only)
+### Step 3: Pull a local Ollama model (hybrid/local mode only)
 
 Download and install [Ollama](https://ollama.com) for your OS. Then pull a model:
 
 > Only required for `MEMORY_MODE=hybrid` or `MEMORY_MODE=local`. Not needed for cloud mode.
 
-### Step 4 — Verify the installation
+### Step 4: Verify the installation
 
 Open a terminal in your project root (virtual environment activated) and run:
 
@@ -366,12 +366,12 @@ The assistant calls `scan_workspace(force_refresh_brief=True)`.
 
 | You say | What happens |
 |---|---|
-| *"Remember that we're using Redis for session caching"* | `save_to_memory` is called |
-| *"What did we decide about auth?"* | `query_memory` → Ollama (local, instant) |
-| *"Refactor the data layer, what are our constraints?"* | `query_memory` → DeepSeek (auto-escalated) |
-| *"List what's in memory for this project"* | `list_memory` |
-| *"What projects do you know about?"* | `list_workspaces` |
-| *"Show me the project brief."* | `get_brief` → displays `.brain/contexts/<id>.md` |
+| _"Remember that we're using Redis for session caching"_ | `save_to_memory` is called |
+| _"What did we decide about auth?"_ | `query_memory` → Ollama (local, instant) |
+| _"Refactor the data layer, what are our constraints?"_ | `query_memory` → DeepSeek (auto-escalated) |
+| _"List what's in memory for this project"_ | `list_memory` |
+| _"What projects do you know about?"_ | `list_workspaces` |
+| _"Show me the project brief."_ | `get_brief` → displays `.brain/contexts/<id>.md` |
 
 ### Retrieve the project brief
 
@@ -392,7 +392,7 @@ Routing is fully automatic based on query characteristics. You can override it e
 | Short, specific query | Ollama | Free |
 | Query ≥ 40 words | DeepSeek v4-flash | ~\$0.028/M cached tokens |
 | Contains architectural keywords (`refactor`, `architect`, `design`, `audit`…) | DeepSeek v4-pro | ~\$0.028/M cached tokens |
-| `use_cloud=True` (explicit override) | DeepSeek | — |
+| `use_cloud=True` (explicit override) | DeepSeek |: |
 | `use_cloud=False` (explicit override) | Ollama | Free |
 
 ---
@@ -505,7 +505,7 @@ grep "ERROR" .brain/server.log
 
 ## Auxiliary Scripts
 
-### `drop_memory.py` — Wipe a workspace
+### `drop_memory.py`: Wipe a workspace
 
 Use this when you need to completely reset the AI's memory for a specific project, for example, if you forgot to configure `.memignore` before the first scan and the AI indexed a large `logs/` directory.
 
