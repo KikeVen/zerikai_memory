@@ -45,6 +45,14 @@ The server runs **entirely on your local machine**. Each IDE connects via STDIO 
 
 ---
 
+### New Updates 2026-05-13
+
+- **Lexical re-ranking in `query_memory`:** New hybrid search step: after semantic retrieval, results are reordered by keyword overlap in entity names and docstrings. Solves false positives where functions with shared vocabulary (e.g. "tree-sitter", "extract") crowd out the correct match. `ENABLE_LEXICAL_RERANK=true` activates it; `LEXICAL_RERANK_WEIGHT` (default 0.05) controls boost per keyword hit. Pure reorder — nothing dropped. Default off.
+- **Agent-aware tool descriptions:** All 15 MCP tool docstrings reviewed and tuned for AI agent consumption (Copilot, Claude Desktop, Antigravity). Agents now receive priority directives, anti-pattern hints, and "when not to use" guidance directly in the tool schema, reducing trial-and-error probing.
+- **`save_to_memory` docstring rewritten:** Leads with use-case semantics (*"Manually save an architectural decision, fact, or technical note"*) instead of implementation details. Adds explicit routing hint: *"it's not for code files — `scan_workspace` handles those."*
+- **Priority directives now explicit:** `get_brief` says *"Use this FIRST on any new workspace."* `query_memory` says *"Use this BEFORE reasoning from priors."* `list_memory` warns *"not to answer code questions — use `query_memory`."* `resolve_workspace` identifies itself as *"a helper tool for agents that don't have filesystem context."*
+- **Irreversible operations flagged:** `merge_workspaces` and `purge_usage_data` both carry a *"Cannot be undone"* warning visible to the agent before execution.
+
 ### New Updates 2026-05-12
 
 - **Parallel brief synthesis:** All 9 brief sections now fire simultaneously via `asyncio.gather`. Brief generation dropped _from ~90 seconds to ~20-30 seconds_.

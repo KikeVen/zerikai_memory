@@ -95,3 +95,10 @@ QUERY_DISTANCE_THRESHOLD = float(os.getenv("QUERY_DISTANCE_THRESHOLD", "1.5"))
 # settings.py, wsgi.py that have only variable assignments and registration calls.
 # Default: False (existing behaviour — all such files are LLM-summarised).
 SKIP_BARE_PY_FILES = os.getenv("SKIP_BARE_PY_FILES", "false").lower() == "true"
+
+# Lexical re-ranking in query_memory
+# When enabled, results are reordered by: (1/dist) + (hits * weight).
+# Pure reorder — nothing below threshold is dropped.
+ENABLE_LEXICAL_RERANK = os.getenv(
+    "ENABLE_LEXICAL_RERANK", "false").lower() == "true"
+LEXICAL_RERANK_WEIGHT = float(os.getenv("LEXICAL_RERANK_WEIGHT", "0.05"))

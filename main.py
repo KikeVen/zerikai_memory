@@ -28,7 +28,9 @@ from config import (
     DEEPSEEK_MODEL_PRO,
     DEEPSEEK_PRICING,
     DEFAULT_MEMORY_MODE,
+    ENABLE_LEXICAL_RERANK,
     ENABLE_TOKEN_TRACKING,
+    LEXICAL_RERANK_WEIGHT,
     OLLAMA_HOST,
     OLLAMA_MODEL,
     QUERY_DISTANCE_THRESHOLD,
@@ -951,12 +953,12 @@ async def save_to_memory(
     last_modified: str | None = None,
 ) -> str:
     """
-    Summarises and saves content to this workspace's persistent vector memory.
-
-    For supported code files (.py, .js, .ts, .tsx, .jsx, .css, .html, .md),
-    uses tree-sitter to extract individual functions, methods, and classes
-    as structured CodeEntity objects — deterministic, zero API cost.
-    For all other file types, falls back to LLM-based summarisation.
+    Manually save an architectural decision, fact, or technical note
+    to this workspace's persistent vector memory with an optional
+    category tag. Use this for decisions and notes you want the AI to
+    remember across sessions — it's not for code files (scan_workspace
+    handles those). For supported code files, entities are extracted
+    deterministically via tree-sitter; other formats use LLM summarisation.
 
     Args:
         content:   The raw content to remember.
@@ -1187,13 +1189,11 @@ async def query_memory(
     show_sources: bool = True,
 ) -> str:
     """
-
     Query the indexed codebase memory for this workspace. Use this BEFORE
     reasoning from priors on any question about code location, architecture,
     function behavior, or file structure. Returns a synthesized answer grounded
     in the actual codebase — not training data — followed by a pre-formatted
     markdown sources table showing file path, line number, and L2 distance.
-    Render the sources table as-is, do not reconstruct it.
 
     Routing is automatic:
       - Short, specific queries  → Ollama (free, instant)
@@ -1207,7 +1207,7 @@ async def query_memory(
         use_cloud:  True = force DeepSeek. False = force Ollama.
                     None = auto-route (recommended).
         show_sources: If True (default), appends a pre-formatted markdown
-                      sources table after the answer. Render it as-is.
+                      sources table after the answer.
     """
     try:
         workspace_id, display_name, workspace_path = _resolve_workspace(
@@ -1215,9 +1215,16 @@ async def query_memory(
         collection = _get_collection(workspace_id)
 
         # 1. Semantic retrieval — scoped to this workspace's collection
+        # Strip source-table request phrases from the search query so DeepSeek
+        # doesn't try to acknowledge/deny a table it can't see (we prepend it).
+        import re as _re
+        search_query = _re.sub(
+            r'([. ]*[Ss]how (me )?(the )?([Ss]ources?( table| chart)?)[. ]*)',
+            '', user_query
+        ).strip() or user_query
         where = {"category": category} if category else None
         results = collection.query(
-            query_texts=[user_query],
+            query_texts=[search_query],
             n_results=5,
             where=where,
             include=["documents", "metadatas", "distances"],
@@ -1255,6 +1262,29 @@ async def query_memory(
                     "query_memory | %d/%d results passed threshold for workspace=%s",
                     len(relevant), len(docs), workspace_id,
                 )
+
+                # Lexical re-ranking — reorder by keyword-overlap boost.
+                # Pure reorder: nothing is dropped. Weight is tuned to nudge
+                # within the ~0.156 1/dist valid-hit spread without overriding
+                # genuinely closer semantic results.
+                if ENABLE_LEXICAL_RERANK:
+                    query_terms = set(user_query.lower().split())
+
+                    def lexical_score(item):
+                        doc, meta, dist = item
+                        name = (meta or {}).get("name", "").lower()
+                        text = doc.lower()
+                        hits = sum(
+                            1 for t in query_terms if t in name or t in text)
+                        return (1 / dist) + (hits * LEXICAL_RERANK_WEIGHT)
+
+                    relevant = sorted(
+                        relevant, key=lexical_score, reverse=True)
+                    log.info(
+                        "query_memory | lexical re-rank applied, top result: %s",
+                        (relevant[0][1] or {}).get("name", "unknown"),
+                    )
+
                 # Build location-tagged context and sources list
                 context_parts = []
                 sources = []
@@ -1292,9 +1322,9 @@ async def query_memory(
 
         # 2. Route and synthesise
         if _should_use_cloud(user_query, use_cloud):
-            answer = await _query_deepseek(context, user_query, workspace_id)
+            answer = await _query_deepseek(context, search_query, workspace_id)
         else:
-            answer = await _query_ollama(context, user_query, workspace_id)
+            answer = await _query_ollama(context, search_query, workspace_id)
 
         # Prepend sources block so agents can't hide it from the user
         if show_sources and sources:
