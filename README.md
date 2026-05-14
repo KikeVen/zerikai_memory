@@ -436,8 +436,8 @@ Routing is fully automatic based on query characteristics. You can override it e
 | Condition | Engine | Cost |
 |---|---|---|
 | Short, specific query | Ollama | Free |
-| Query ≥ 40 words | DeepSeek v4-flash | ~\$0.028/M cached tokens |
-| Contains architectural keywords (`refactor`, `architect`, `design`, `audit`…) | DeepSeek v4-pro | ~\$0.028/M cached tokens |
+| Query ≥ 40 words | DeepSeek v4-flash | \$0.0028/M cached tokens |
+| Contains architectural keywords (`refactor`, `architect`, `design`, `audit`…) | DeepSeek v4-pro | \$0.003625/M cached tokens (75% off until May 31) |
 | `use_cloud=True` (explicit override) | DeepSeek |: |
 | `use_cloud=False` (explicit override) | Ollama | Free |
 
