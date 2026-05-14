@@ -87,11 +87,31 @@ Your IDE  ──►  MCP Server (main.py)  ──►  ChromaDB (.brain/vector_db
 When you ask your AI assistant a question:
 
 1. The MCP server receives the query.
-2. It performs a **vector search** against ChromaDB to retrieve the most relevant entities (function signatures, docstrings, file summaries) from your codebase.
+2. It performs a **vector search** against ChromaDB to retrieve the most relevant entities (function signatures, docstrings, file summaries) from your codebase, with an optional lexical re-rank if `ENABLE_LEXICAL_RERANK=true`.
 3. The auto-router decides whether to send the query to **Ollama** (local, free) or **DeepSeek** (cloud, billed).
 4. The synthesised answer is returned to your IDE ; enriched with workspace context, without bloating your chat window.
 
 You never call MCP tools directly. You speak to your AI assistant in natural language and it calls the tools on your behalf.
+
+### Lexical Re-ranking
+
+When `ENABLE_LEXICAL_RERANK=true` in `.env`, a lightweight hybrid step runs between semantic retrieval and LLM synthesis. Pure vector search can miss exact function or class names that share vocabulary with unrelated code. The reranker boosts results where query keywords appear in entity names or docstrings, without dropping anything.
+
+```
+Query → embed → ChromaDB top-N → lexical re-rank → LLM synthesis
+                                      ↑
+                           Weighted boost on keyword hits in
+                           entity name + docstring text.
+                           Nothing is dropped — pure reorder.
+```
+
+1. **Semantic retrieval** — ChromaDB returns the top-N results by L2 distance.
+2. **Distance threshold** — Results above `QUERY_DISTANCE_THRESHOLD` are dropped.
+3. **Lexical re-rank** — Survivors are re-scored: `(1/dist) + (keyword_hits ×
+   LEXICAL_RERANK_WEIGHT)`. A function named `extract_entities` with a matching
+   docstring outranks a generic file summary that happens to be semantically close.
+4. **LLM synthesis** — The reordered context is passed to DeepSeek or Ollama for
+   the final answer.
 
 ### Workspace Identity
 
