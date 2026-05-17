@@ -44,8 +44,17 @@ By storing compressed, semantically searchable summaries of your codebase and ar
 The server runs **entirely on your local machine**. Each IDE connects via STDIO to its own server process, with direct filesystem access for workspace scanning.
 
 ---
+<details>
 
-### New Updates 2026-05-13
+**<summary>New Updates 2026-05-17</summary>**
+
+- **Inline source citations:** Replaced the `## Sources` Markdown table with plain-text `#file:line (distance)` citations. Renders in every IDE without broken tables; clickable in VS Code Copilot. Tested against Copilot, Claude Desktop, Antigravity, and pi with documented agent behavior differences.
+
+</details>
+
+<details>
+
+**<summary>Updates 2026-05-13</summary>**
 
 - **Lexical re-ranking in `query_memory`:** New hybrid search step: after semantic retrieval, results are reordered by keyword overlap in entity names and docstrings. Solves false positives where functions with shared vocabulary (e.g. "tree-sitter", "extract") crowd out the correct match. `ENABLE_LEXICAL_RERANK=true` activates it; `LEXICAL_RERANK_WEIGHT` (default 0.05) controls boost per keyword hit. Pure reorder, nothing dropped. Default off.
 - **Agent-aware tool descriptions:** All 15 MCP tool docstrings reviewed and tuned for AI agent consumption (Copilot, Claude Desktop, Antigravity). Agents now receive priority directives, anti-pattern hints, and "when not to use" guidance directly in the tool schema, reducing trial-and-error probing.
@@ -53,26 +62,35 @@ The server runs **entirely on your local machine**. Each IDE connects via STDIO 
 - **Priority directives now explicit:** `get_brief` says *"Use this FIRST on any new workspace."* `query_memory` says *"Use this BEFORE reasoning from priors."* `list_memory` warns *"not to answer code questions, use `query_memory`."* `resolve_workspace` identifies itself as *"a helper tool for agents that don't have filesystem context."*
 - **Irreversible operations flagged:** `merge_workspaces` and `purge_usage_data` both carry a *"Cannot be undone"* warning visible to the agent before execution.
 
-### New Updates 2026-05-12
+</details>
+
+<details>
+
+**<summary>Updates 2026-05-12</summary>**
 
 - **Parallel brief synthesis:** All 9 brief sections now fire simultaneously via `asyncio.gather`. Brief generation dropped *from ~90 seconds to ~20-30 seconds*.
 - Skip bare `.py` files: New `SKIP_BARE_PY_FILES` toggle in `.env`. Skips `.py` files with no functions or classes (`admin.py`, `urls.py`, `settings.py`) to avoid DeepSeek calls on boilerplate.
  Default off.
-- **HTML comment indexing:** _extract_html now captures `<!-- -->` comments as docstrings for the elements that follow. Comments are searchable and appear in the Sources table.
+- **HTML comment indexing:** _extract_html now captures `<!-- -->` comments as docstrings for the elements that follow. Comments are searchable and appear in inline source citations.
 - **Embedding-docstring skill:** Updated to cover HTML comments in addition to *Python*, *JavaScript*, and *TypeScript* docstrings.
 - **Brief timing corrected:** Status messages updated from "about 90 seconds" to "about 20 seconds."
 - **Primary Conventions prompt tightened:** Briefs no longer include filler sections like Naming Conventions or Testing infrastructure.
 - **use_cloud default:** `synthesize_deep_brief` now defaults to cloud mode.
 
-### Update - 2026-05-11
+</details>
 
-- **Sources table**: Every `query_memory` response prepends a `## Sources` Markdown table with entity name, file, line, and semantic distance.
+<details>
+
+**<summary>Update - 2026-05-11</summary>**
+
+- **Inline source citations**: Every `query_memory` response prepends inline `#file:line (distance)` citations — plain text, cross-agent compatible, clickable in VS Code Copilot.
 - **Full docstrings embedded**: `_clean_docstring` no longer truncates to first sentence; the LLM sees complete function descriptions for richer answers.
-- **`show_sources` toggle**: Callers can enable or disable the Sources table per query; defaults to on.
+- **`show_sources` toggle**: Callers can enable or disable inline source citations per query; defaults to on.
 - **Fire-and-forget brief synthesis**: `scan_workspace` returns immediately; brief generates in background, no more MCP timeouts.
 - **Tighter distance threshold**: Default `QUERY_DISTANCE_THRESHOLD=1.0` in `.env`, eliminating false positives.
 - **Embedding-docstring skill**: A companion skill (`skill/embedding-docstring.md`) that audits docstrings for embedding quality: technology naming, routing documentation, guarantees, and size limits.
 
+</details>
 ---
 
 ## How It Works
@@ -123,7 +141,7 @@ The AI assistant can resolve any workspace identifier: UUID, short-UUID, or disp
 
 ## Cost Savings Explained
 
-DeepSeek is invoked in three places: query synthesis (when auto-routed for long or architectural queries), brief synthesis (9 section calls totalling ~ \$0.003 per full regeneration), and file scanning when in cloud mode (~ \$0.000167 per file). In hybrid mode, routine queries and file scans run on Ollama at \$0. The Project Brief is a fixed prefix across queries, so DeepSeek caches it at \$0.0028/M tokens (hit) vs \$0.14/M (miss), 50x cheaper after the first query. Code files are parsed locally by tree-sitter at zero API cost regardless of mode. All IDEs share the same .brain/ directory, so context saved in one is instantly available in another with no re-explanation cost. Every query_memory response includes a ## Sources Markdown table with entity name, file, line, and distance. This metadata is already stored during scanning at no extra API cost.
+DeepSeek is invoked in three places: query synthesis (when auto-routed for long or architectural queries), brief synthesis (9 section calls totalling ~ \$0.003 per full regeneration), and file scanning when in cloud mode (~ \$0.000167 per file). In hybrid mode, routine queries and file scans run on Ollama at \$0. The Project Brief is a fixed prefix across queries, so DeepSeek caches it at \$0.0028/M tokens (hit) vs \$0.14/M (miss), 50x cheaper after the first query. Code files are parsed locally by tree-sitter at zero API cost regardless of mode. All IDEs share the same .brain/ directory, so context saved in one is instantly available in another with no re-explanation cost. Every query_memory response includes inline #file:line citations with entity name and L2 distance. This metadata is already stored during scanning at no extra API cost.
 
 ---
 
@@ -188,9 +206,13 @@ Configure via `MEMORY_MODE` in your `.env` file.
 | `hybrid` | Ollama (scans/routine) + DeepSeek (architecture/briefs) | Privacy-sensitive users who want free local lookups |
 | `local` | Ollama for everything | 100% privacy & $0 cost, lower quality |
 
-**Recommendation:** Start with `cloud`. You only need a DeepSeek API key -- no Ollama installation, no GPU requirements, no local model management. DeepSeek v4-flash is cheap ($0.14/M input tokens) and brief synthesis runs at ~$0.003 per full regeneration.
+**Recommendation:** Start with `cloud`. You only need a DeepSeek API key -- no Ollama installation, no GPU requirements, no local model management. DeepSeek v4-flash is cheap (\$0.14/M input tokens) and brief synthesis runs at ~\$0.003 per full regeneration.
 
 **Get a DeepSeek API key at [platform.deepseek.com](https://platform.deepseek.com), then add it to `.env`:**
+
+<details>
+
+**<summary>Expand to view .env</summary>**
 
 ```.env
 DEEPSEEK_API_KEY=your_deepseek_key_here
@@ -239,9 +261,11 @@ ENABLE_LEXICAL_RERANK=false
 LEXICAL_RERANK_WEIGHT=0.05
 ```
 
-> **Note:** `OLLAMA_HOST` is optional. If your system has `OLLAMA_HOST=0.0.0.0` set (common on server installs), the server corrects it to `http://127.0.0.1:11434` for client connections.
+</details>
 
 ### Step 3: Pull a local Ollama model (hybrid/local mode only)
+
+**Note:** `OLLAMA_HOST` is optional. If your system has `OLLAMA_HOST=0.0.0.0` set (common on server installs), the server corrects it to `http://127.0.0.1:11434` for client connections.
 
 Download and install [Ollama](https://ollama.com) for your OS. Then pull a model:
 
@@ -263,7 +287,19 @@ You should see the server startup banner followed by `OK`.
 
 The server starts **once** when the IDE loads and stays running. Tool calls are messages to that process, there is no restart per call.
 
-### Google Antigravity
+### VS Code (Copilot / Cline)
+
+1. Press `Ctrl+Shift+P` → **MCP: Add Local Server**
+2. Choose **STDIO**
+3. Set command to: `C:\\path\\to\\zerikai_memory\\venv\\Scripts\\python.exe C:\\path\\to\\zerikai_memory\\main.py`
+
+> Replace `C:\\path\\to\\zerikai_memory` with the actual absolute path. Double backslashes are required for valid JSON on Windows.
+
+**To see other registrations click on the collapsed section below:**
+
+<details>
+
+**<summary>Google Antigravity</summary>**
 
 Edit `mcp_config.json` directly:
 
@@ -277,15 +313,11 @@ Edit `mcp_config.json` directly:
 }
 ```
 
-> Replace `C:\\path\\to\\zerikai_memory` with the actual absolute path. Double backslashes are required for valid JSON on Windows.
+</details>
 
-### VS Code (Copilot / Cline)
+<details>
 
-1. Press `Ctrl+Shift+P` → **MCP: Add Local Server**
-2. Choose **STDIO**
-3. Set command to: `/path/to/zerikai_memory/venv/bin/python /path/to/zerikai_memory/main.py`
-
-### Cursor
+**<summary>Cursor</summary>**
 
 Add to `.cursor/mcp.json`:
 
@@ -300,7 +332,11 @@ Add to `.cursor/mcp.json`:
 }
 ```
 
-### Claude Desktop
+</details>
+
+<details>
+
+**<summary>Claude Desktop</summary>**
 
 **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
 **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
@@ -318,7 +354,9 @@ Add to `.cursor/mcp.json`:
 }
 ```
 
-> On macOS/Linux, use forward slashes: `/path/to/zerikai_memory/venv/bin/python`
+</details>
+
+**On macOS/Linux, use forward slashes:** `/path/to/zerikai_memory/venv/bin/python`
 
 ---
 
@@ -328,7 +366,11 @@ Add to `.cursor/mcp.json`:
 
 Works like `.gitignore`: one pattern per line. `scan_workspace` reads this file and skips matching paths.
 
-Each project should have its own `.memignore` in its root directory. Forgetting to configure it before the first scan is the most common reason to use `drop_memory.py` and start fresh.
+Each project should have its own `.memignore` in its root directory. Forgetting to configure it before the first scan is the most common reason to use `drop_memory.py` and start fresh:
+
+<details>
+
+**<summary>Sample .memignore</summary>**
 
 ```gitignore
 # Directories (trailing slash required)
@@ -348,6 +390,8 @@ build/
 *.lock
 *.pyc
 ```
+
+</details>
 
 ### 2. Register a new project
 
@@ -493,7 +537,7 @@ You never call these tools directly, your AI assistant calls them based on your 
 | `scan_workspace` | Walks the directory, respects `.memignore`, and saves all readable text files to persistent memory. Idempotent and self-cleaning. |
 | `save_to_memory` | Manually saves an architectural decision, fact, or technical note with an optional category tag. |
 | `list_memory` | Lists stored memories for a workspace, optionally filtered by category. |
-| `query_memory` | Retrieves relevant context via vector search and synthesises an answer via Ollama or DeepSeek (auto-routed). Returns a `## Sources` Markdown table with entity name, file, line, and distance. Defaults to on; set `show_sources=False` for clean output. Different agents render the table differently: Claude Desktop may need prompting to show it; after the format was changed to raw Markdown, agents display it directly. Ask "show me the source chart" to surface it. |
+| `query_memory` | Retrieves relevant context via vector search and synthesises an answer via Ollama or DeepSeek (auto-routed). Returns inline `#file:line (distance)` citations — plain text that renders in every IDE, clickable in VS Code Copilot. Defaults to on; set `show_sources=False` for clean output. |
 | `get_brief` | Retrieves the current project brief from `.brain/contexts/`. |
 | `update_brief` | Manually updates the markdown content of a project brief. |
 

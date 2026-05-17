@@ -1192,8 +1192,7 @@ async def query_memory(
     Query the indexed codebase memory for this workspace. Use this BEFORE
     reasoning from priors on any question about code location, architecture,
     function behavior, or file structure. Returns a synthesized answer grounded
-    in the actual codebase — not training data — followed by a pre-formatted
-    markdown sources table showing file path, line number, and L2 distance.
+    in the actual codebase — not training data — with inline source citations (#file:line) showing file path, line number, and L2 distance.
 
     Routing is automatic:
       - Short, specific queries  → Ollama (free, instant)
@@ -1305,10 +1304,10 @@ async def query_memory(
                             if parent:
                                 label += f" in {parent}"
                             location_label = f"[{location}] {label}"
-                            source_entry = f"| `{name}` | {src_file} | {lineno} | {dist:.2f} |"
+                            source_entry = f"`{name}` #{src_file}:{lineno} ({dist:.2f})"
                         else:
                             location_label = f"[{location}]"
-                            source_entry = f"| — | {src_file} | {lineno} | {dist:.2f} |"
+                            source_entry = f"#{src_file}:{lineno} ({dist:.2f})"
 
                     if location_label:
                         context_parts.append(f"{location_label}\n{doc}")
@@ -1326,11 +1325,9 @@ async def query_memory(
         else:
             answer = await _query_ollama(context, search_query, workspace_id)
 
-        # Prepend sources block so agents can't hide it from the user
+        # Prepend sources as inline citations (#file:line) for cross-agent compatibility
         if show_sources and sources:
-            table = "## Sources\n\n| Entity | File | Line | Distance |\n|---|---|---|---|\n"
-            table += "\n".join(sources)
-            answer = table + "\n\n" + answer
+            answer = "Sources: " + ", ".join(sources) + "\n\n" + answer
 
         return answer
 
