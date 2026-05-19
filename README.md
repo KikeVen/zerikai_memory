@@ -244,14 +244,14 @@ QUERY_DISTANCE_THRESHOLD=1.0
 # wsgi.py that have only variable assignments and module-level code.
 # Default: false (existing behaviour — all such files are LLM-summarised).
 # Set to "true" to skip them.
-SKIP_BARE_PY_FILES=false
+SKIP_BARE_PY_FILES=true
 
 # Enable lexical re-ranking in query_memory.
 # When true, results passing the distance threshold are reordered by a
 # weighted combination of semantic distance and keyword overlap in entity
 # name and docstring text. Nothing is dropped — pure reorder.
 # Default: false (existing pure-semantic behaviour preserved).
-ENABLE_LEXICAL_RERANK=false
+ENABLE_LEXICAL_RERANK=true
 
 # Weight applied per keyword hit during lexical re-ranking.
 # The 1/dist spread across the valid-hit band (0.85–0.98) is ~0.156.
@@ -291,9 +291,9 @@ The server starts **once** when the IDE loads and stays running. Tool calls are 
 
 1. Press `Ctrl+Shift+P` → **MCP: Add Local Server**
 2. Choose **STDIO**
-3. Set command to: `C:\\path\\to\\zerikai_memory\\venv\\Scripts\\python.exe C:\\path\\to\\zerikai_memory\\main.py`
+3. Set command to: `C:\path\to\zerikai_memory\venv\Scripts\python.exe C:\path\to\zerikai_memory\main.py`
 
-> Replace `C:\\path\\to\\zerikai_memory` with the actual absolute path. Double backslashes are required for valid JSON on Windows.
+> Replace `C:\path\to\zerikai_memory` with the actual absolute path. Double backslashes are required for valid JSON on Windows.
 
 **To see other registrations click on the collapsed section below:**
 
