@@ -88,7 +88,7 @@ The server runs **entirely on your local machine**. Each IDE connects via STDIO 
 - **`show_sources` toggle**: Callers can enable or disable inline source citations per query; defaults to on.
 - **Fire-and-forget brief synthesis**: `scan_workspace` returns immediately; brief generates in background, no more MCP timeouts.
 - **Tighter distance threshold**: Default `QUERY_DISTANCE_THRESHOLD=1.0` in `.env`, eliminating false positives.
-- **Embedding-docstring skill**: A companion skill (`skill/embedding-docstring.md`) that audits docstrings for embedding quality: technology naming, routing documentation, guarantees, and size limits.
+- **Embedding-docstring skill**: A companion skill (`embedding-docstring/SKILL.md`) that audits docstrings for embedding quality: technology naming, routing documentation, guarantees, and size limits.
 
 </details>
 ---
@@ -625,7 +625,7 @@ After wiping, fix your `.memignore`, then re-run `init_workspace` and `scan_work
 
 ## Embedding-Docstring Skill
 
-The embedding-docstring skill (`skill/embedding-docstring.md`) is a companion skill that helps maintain docstring quality across any codebase. It audits functions, methods, and classes for embedding-optimized docstrings that are rich, dense, and keyword-accurate so semantic search retrieves them correctly.
+The embedding-docstring skill (`embedding-docstring/SKILL.md`) is a companion skill that helps maintain docstring quality across any codebase. It audits functions, methods, and classes for embedding-optimized docstrings that are rich, dense, and keyword-accurate so semantic search retrieves them correctly.
 
 ### What it checks
 
