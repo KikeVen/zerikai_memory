@@ -46,6 +46,15 @@ The server runs **entirely on your local machine**. Each IDE connects via STDIO 
 ---
 <details>
 
+**<summary>New Updates 2026-05-27</summary>**
+
+- **IDE Agent Rules:** New [`agent_rules/ide_agent_rules.md`](agent_rules/ide_agent_rules.md) with two behavioral rules — *Universal-Brain First* (query memory before raw file searches) and *Source Discipline* (always surface `file:line` citations with confidence scores). Includes per-IDE setup instructions for VS Code Copilot, pi.dev, Google Antigravity, and Claude Desktop. Applied rules prevent agents from skipping memory or fabricating answers.
+- **README:** New `### IDE Agent Rules` subsection under IDE Registration summarising the rules and linking to the file. `agent_rules/` added to the project structure tree.
+
+</details>
+
+<details>
+
 **<summary>New Updates 2026-05-17</summary>**
 
 - **Inline source citations:** Replaced the `## Sources` Markdown table with plain-text `#file:line (distance)` citations. Renders in every IDE without broken tables; clickable in VS Code Copilot. Tested against Copilot, Claude Desktop, Antigravity, and pi with documented agent behavior differences.
@@ -156,6 +165,7 @@ zerikai_memory/
 │   └── contexts/                 # Per-workspace project briefs (.md files)
 ├── .env                          # API keys: never commit
 ├── .memignore                    # Files/dirs excluded from memory indexing
+├── agent_rules/                  # IDE agent behavior rules (universal-brain usage)
 ├── code_indexer.py               # Deterministic tree-sitter extraction logic
 ├── config.py                     # Configuration & routing thresholds
 ├── drop_memory.py                # Cleanup utility (registry + vectors + files)
@@ -357,6 +367,17 @@ Add to `.cursor/mcp.json`:
 </details>
 
 **On macOS/Linux, use forward slashes:** `/path/to/zerikai_memory/venv/bin/python`
+
+### IDE Agent Rules
+
+After registering the MCP server, configure your IDE's agent instructions so it uses `universal-brain` correctly. The full guide lives at [`agent_rules/ide_agent_rules.md`](agent_rules/ide_agent_rules.md) with setup steps for VS Code Copilot, pi.dev, Google Antigravity, and Claude Desktop.
+
+**What the rules enforce:**
+
+- **Universal-Brain First** — Before any codebase exploration, the agent queries `universal-brain` via `query_memory`. Raw file searches are only used when memory has no relevant context, and the agent must state that it escalated.
+- **Source Discipline** — Every answer surfaces the full source citation (`file.py:line`) and confidence score from `universal-brain`. If memory has no answer, the agent says so instead of fabricating.
+
+> Apply these rules **after** registering the MCP server — they configure how the agent behaves once connected, not how it connects.
 
 ---
 
