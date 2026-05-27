@@ -44,6 +44,9 @@ By storing compressed, semantically searchable summaries of your codebase and ar
 The server runs **entirely on your local machine**. Each IDE connects via STDIO to its own server process, with direct filesystem access for workspace scanning.
 
 ---
+
+Most recent updates are listed in the changelog below. Click to expand:
+
 <details>
 
 **<summary>New Updates 2026-05-27</summary>**
@@ -55,7 +58,7 @@ The server runs **entirely on your local machine**. Each IDE connects via STDIO 
 
 <details>
 
-**<summary>New Updates 2026-05-17</summary>**
+**<summary>Updates 2026-05-17</summary>**
 
 - **Inline source citations:** Replaced the `## Sources` Markdown table with plain-text `#file:line (distance)` citations. Renders in every IDE without broken tables; clickable in VS Code Copilot. Tested against Copilot, Claude Desktop, Antigravity, and pi with documented agent behavior differences.
 
@@ -100,6 +103,7 @@ The server runs **entirely on your local machine**. Each IDE connects via STDIO 
 - **Embedding-docstring skill**: A companion skill (`embedding-docstring/SKILL.md`) that audits docstrings for embedding quality: technology naming, routing documentation, guarantees, and size limits.
 
 </details>
+
 ---
 
 ## How It Works
