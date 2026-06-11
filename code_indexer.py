@@ -33,7 +33,12 @@ from tree_sitter import Language, Node, Parser, Query
 
 @dataclass
 class LanguageConfig:
-    """Configuration for a supported tree-sitter language."""
+    """Configuration for a supported tree-sitter language. Maps a file
+    extension to its tree-sitter grammar (Language object), entity query
+    (tree-sitter query string for finding functions/classes), and display
+    name. Used by extract_entities to select the correct parser per file
+    type. Pure data container — no methods, no side effects.
+    """
 
     language: Language  # tree-sitter Language object
     extensions: set[str]  # e.g. {".py"}
@@ -226,7 +231,13 @@ def extract_entities(source_code: str, file_path: str) -> list[CodeEntity]:
 def _extract_python(
     tree, source_code: str, file_path: str, config: LanguageConfig, entities: list[CodeEntity]
 ) -> None:
-    """Walk the tree-sitter CST for Python function and class definitions."""
+    """Walk the tree-sitter CST for Python function and class definitions.
+
+    Recurses into class bodies to extract nested methods. Handles both
+    bare and decorated definitions via tree-sitter node types. Mutates
+    the entities list in-place — no return value. No guarantees on
+    ordering.
+    """
     root = tree.root_node
     source_bytes = source_code.encode("utf-8")
     lines = source_code.split("\n")
@@ -292,7 +303,12 @@ def _extract_python_function(
     language: str,
     parent_class: str | None,
 ) -> CodeEntity | None:
-    """Extract a Python function definition from a tree-sitter node."""
+    """Build a CodeEntity from a tree-sitter Python function node.
+
+    Extracts the name, docstring, decorators, parameters (via
+    _extract_python_params), and return type annotation. Returns
+    None if the node lacks a name field. Pure — no side effects.
+    """
     name_node = node.child_by_field_name("name")
     if name_node is None:
         return None
@@ -352,7 +368,11 @@ def _extract_python_class(
     file_path: str,
     language: str,
 ) -> CodeEntity | None:
-    """Extract a Python class definition from a tree-sitter node."""
+    """Build a CodeEntity from a tree-sitter Python class node.
+
+    Extracts the name, base classes, docstring, and decorators.
+    Returns None if the node lacks a name field. Pure.
+    """
     name_node = node.child_by_field_name("name")
     if name_node is None:
         return None
@@ -401,7 +421,12 @@ def _extract_python_class(
 
 
 def _extract_python_docstring(node: Node, lines: list[str]) -> str | None:
-    """Extract the docstring from a tree-sitter Python function or class body node."""
+    """Extract the docstring from a tree-sitter Python function or class body.
+
+    Walks the body block for the first expression_statement containing a
+    tree-sitter string node. Handles both single-line and multi-line
+    docstrings. Returns None if no docstring is found.
+    """
     body = node.child_by_field_name("body")
     if body is None:
         return None
@@ -437,11 +462,11 @@ def _extract_python_docstring(node: Node, lines: list[str]) -> str | None:
 
 
 def _extract_python_decorators(node: Node, source_bytes: bytes) -> list[str]:
-    """Extract decorator names from a tree-sitter Python function/class definition.
+    """Extract decorator names from a tree-sitter Python function/class node.
 
-    Walks the tree-sitter CST to handle both:
-    - decorated_definition nodes (decorators are named children)
-    - function_definition / class_definition nodes (decorators are prev siblings)
+    Handles both decorated_definition nodes (named children) and bare
+    function/class nodes (prev_named_sibling walk). Uses tree-sitter CST
+    navigation. Returns empty list if no decorators found. Pure.
     """
     decorators = []
 
@@ -461,7 +486,12 @@ def _extract_python_decorators(node: Node, source_bytes: bytes) -> list[str]:
 
 
 def _extract_python_params(node: Node, source_bytes: bytes) -> list[dict]:
-    """Extract parameter names, types, and defaults from a tree-sitter Python function node."""
+    """Extract parameter metadata from a tree-sitter Python function node.
+
+    Handles identifier, typed_parameter, default_parameter,
+    typed_default_parameter, and splat patterns. Each dict has keys:
+    name, type_annotation, default. Uses tree-sitter CST. Pure.
+    """
     params_node = node.child_by_field_name("parameters")
     if params_node is None:
         return []
@@ -528,7 +558,11 @@ def _extract_python_params(node: Node, source_bytes: bytes) -> list[dict]:
 
 
 def _extract_python_return_type(node: Node, source_bytes: bytes) -> str | None:
-    """Extract the return type annotation from a tree-sitter Python function node."""
+    """Extract the return type annotation from a tree-sitter Python function node.
+
+    Uses the child_by_field_name('return_type') API. Returns None
+    if no return type annotation is present. Pure.
+    """
     return_type_node = node.child_by_field_name("return_type")
     if return_type_node is None:
         return None
@@ -543,7 +577,12 @@ def _extract_python_return_type(node: Node, source_bytes: bytes) -> str | None:
 def _extract_js_like(
     tree, source_code: str, file_path: str, config: LanguageConfig, entities: list[CodeEntity]
 ) -> None:
-    """Extract functions, methods, and classes from JS/TS/TSX source using tree-sitter."""
+    """Walk the tree-sitter CST for JS/TS/TSX function, method, and class
+    definitions. Handles function_declaration, class_declaration,
+    method_definition, and arrow functions via lexical_declaration.
+    Recurses into class bodies and nested blocks. Mutates entities list
+    in-place — no ordering guarantee. Pure beyond the side-effect append.
+    """
     lines = source_code.split("\n")
     source_bytes = source_code.encode("utf-8")
     root = tree.root_node
@@ -600,7 +639,12 @@ def _extract_js_function(
     language: str,
     parent_class: str | None,
 ) -> CodeEntity | None:
-    """Extract a JS/TS function or method definition from a tree-sitter node."""
+    """Build a CodeEntity from a tree-sitter JS/TS function or method node.
+
+    Extracts the name, JSDoc (via _extract_jsdoc), parameters (via
+    _extract_js_params), and return type. Returns None if the node
+    lacks a name field. Pure.
+    """
     name_node = node.child_by_field_name("name")
     if name_node is None:
         return None
@@ -669,7 +713,12 @@ def _extract_arrow_function(
     language: str,
     parent_class: str | None,
 ) -> CodeEntity | None:
-    """Extract a const arrow function from a tree-sitter node: `const myFunc = (params) => { ... }`"""
+    """Build a CodeEntity from a tree-sitter const arrow function node.
+
+    Extracts from patterns like `const myFunc = (params) => { ... }`.
+    Looks up the arrow_function value child for params and return type.
+    Returns None if the node lacks a name field. Pure.
+    """
     name_node = node.child_by_field_name("name")
     if name_node is None:
         return None
@@ -732,7 +781,11 @@ def _extract_js_class(
     file_path: str,
     language: str,
 ) -> CodeEntity | None:
-    """Extract a JS/TS class definition from a tree-sitter node."""
+    """Build a CodeEntity from a tree-sitter JS/TS class node.
+
+    Extracts the class name, JSDoc comment, and builds a signature.
+    Returns None if the node lacks a name field. Pure.
+    """
     name_node = node.child_by_field_name("name")
     if name_node is None:
         return None
@@ -764,7 +817,11 @@ def _extract_js_class(
 
 
 def _extract_jsdoc(node: Node, lines: list[str]) -> str | None:
-    """Extract JSDoc comment preceding a JS/TS function or class."""
+    """Extract JSDoc comment preceding a tree-sitter JS/TS function or class.
+    Walks backwards from the node's start line through /** ... */ block
+    comments, stripping JSDoc markers and leading asterisks. Returns None
+    if no JSDoc block is found above the node. Pure — no side effects.
+    """
     start_line = node.start_point[0]
     # Look at the line just before this node's start
     if start_line == 0:
@@ -805,7 +862,12 @@ def _extract_jsdoc(node: Node, lines: list[str]) -> str | None:
 
 
 def _extract_js_params(node: Node, source_bytes: bytes) -> list[dict]:
-    """Extract parameters from a tree-sitter JS/TS function or arrow function node."""
+    """Extract parameter metadata from a tree-sitter JS/TS function or arrow node.
+
+    Handles identifier, required_parameter (TS typed), and optional_parameter
+    (TS optional/default). Each dict has keys: name, type_annotation, default.
+    Uses tree-sitter CST. Pure.
+    """
     params_node = node.child_by_field_name("parameters")
     if params_node is None:
         return []
@@ -852,7 +914,11 @@ def _extract_js_params(node: Node, source_bytes: bytes) -> list[dict]:
 
 
 def _extract_js_return_type(node: Node, source_bytes: bytes) -> str | None:
-    """Extract the return type annotation from a tree-sitter JS/TS function node."""
+    """Extract the return type annotation from a tree-sitter JS/TS function node.
+
+    Uses the child_by_field_name('return_type') API. Returns None
+    if no return type annotation is present. Pure.
+    """
     return_type_node = node.child_by_field_name("return_type")
     if return_type_node is None:
         return None
@@ -866,6 +932,11 @@ def _extract_js_return_type(node: Node, source_bytes: bytes) -> str | None:
 def _extract_css(
     tree, source_code: str, file_path: str, config: LanguageConfig, entities: list[CodeEntity]
 ) -> None:
+    """Walk the tree-sitter CST for CSS rule sets. Extracts each rule_set
+    node with its selectors as a CodeEntity containing the full rule text.
+    Mutates entities list in-place. No guarantees on selector ordering —
+    extraction order follows tree-sitter's depth-first CST traversal.
+    """
     root = tree.root_node
 
     def _walk(node: Node):
@@ -907,6 +978,12 @@ def _extract_css(
 def _extract_html(
     tree, source_code: str, file_path: str, config: LanguageConfig, entities: list[CodeEntity]
 ) -> None:
+    """Walk the tree-sitter CST for semantic HTML elements using the
+    tree-sitter-html grammar. Extracts elements with semantic tag names
+    (main, header, section, article, nav, aside, footer), id-bearing
+    elements, and script/style elements. Captures preceding HTML comments
+    as docstrings. Mutates entities list in-place.
+    """
     root = tree.root_node
     semantic_tags = {"main", "header", "footer", "section", "article", "nav", "aside"}
 
@@ -993,118 +1070,146 @@ def _extract_html(
 def _extract_markdown(
     tree, source_code: str, file_path: str, config: LanguageConfig, entities: list[CodeEntity]
 ) -> None:
-    """Walk the tree-sitter CST for Markdown: headings and fenced code blocks."""
+    """Walk the tree-sitter-markdown CST and emit each section as a single
+    rich entity containing all its prose, tables, lists, blockquotes, and
+    fenced code blocks. Child sections are recursed into as separate
+    entities to preserve breadcrumb hierarchy in vector search. Loose
+    content before the first heading is captured as a preamble entity.
+    Mutates entities list in-place. Uses tree-sitter-markdown grammar.
+    """
     root = tree.root_node
-    lines = source_code.split("\n")
 
-    def _walk_sections(node: Node, heading_stack: list[str]) -> None:
-        """Recursively walk section nodes, extracting headings and code blocks."""
+    # -------------------------------------------------------------------
+    # Helpers
+    # -------------------------------------------------------------------
+
+    def _heading_info(node: Node) -> tuple[int, str] | None:
+        """Return (level, text) for an atx_heading child, or None if the
+        node isn't a recognised heading."""
+        level = 1
+        text = ""
+        found_marker = False
+        for sub in node.children:
+            if sub.type == "atx_h1_marker":
+                level, found_marker = 1, True
+            elif sub.type == "atx_h2_marker":
+                level, found_marker = 2, True
+            elif sub.type == "atx_h3_marker":
+                level, found_marker = 3, True
+            elif sub.type == "atx_h4_marker":
+                level, found_marker = 4, True
+            elif sub.type == "atx_h5_marker":
+                level, found_marker = 5, True
+            elif sub.type == "atx_h6_marker":
+                level, found_marker = 6, True
+            elif sub.type == "inline":
+                text = sub.text.decode("utf-8").strip()
+        return (level, text) if found_marker and text else None
+
+    def _emit(
+        entity_type: str,
+        name: str,
+        signature: str,
+        document_text: str,
+        start_lineno: int,
+        end_lineno: int,
+    ) -> None:
+        """Append a CodeEntity to the shared list, skipping empty bodies."""
+        if not document_text.strip():
+            return
+        entities.append(CodeEntity(
+            entity_type=entity_type,
+            name=name,
+            signature=signature,
+            docstring=None,
+            document_text=document_text,
+            file_path=file_path,
+            language=config.display_name,
+            lineno=start_lineno,
+            end_lineno=end_lineno,
+            parent_class=None,
+            decorators=[],
+            params=[],
+            return_type=None,
+        ))
+
+    # -------------------------------------------------------------------
+    # Section walker — emits each section as a whole entity
+    # -------------------------------------------------------------------
+
+    def _walk(node: Node, heading_stack: list[str]) -> None:
+        """Walk children: emit sections as whole entities, then recurse
+        into nested child sections with updated breadcrumbs."""
         for child in node.named_children:
-            if child.type == "atx_heading":
-                # Determine heading level from marker (atx_h1_marker ... atx_h6_marker)
+            if child.type != "section":
+                continue
+
+            # --- Find the section's heading ---
+            heading_text: str | None = None
+            level = 0
+            for sub in child.named_children:
+                if "heading" in sub.type:
+                    info = _heading_info(sub)
+                    if info:
+                        level, heading_text = info
+                    break
+
+            # tree-sitter-markdown wraps loose preamble content in a
+            # heading-less section.  Give it a meaningful name.
+            if heading_text is None:
+                heading_text = f"{file_path} (preamble)" if not heading_stack else "Untitled"
                 level = 1
-                heading_text = ""
-                for sub in child.children:
-                    if sub.type == "atx_h1_marker":
-                        level = 1
-                    elif sub.type == "atx_h2_marker":
-                        level = 2
-                    elif sub.type == "atx_h3_marker":
-                        level = 3
-                    elif sub.type == "atx_h4_marker":
-                        level = 4
-                    elif sub.type == "atx_h5_marker":
-                        level = 5
-                    elif sub.type == "atx_h6_marker":
-                        level = 6
-                    elif sub.type == "inline":
-                        heading_text = sub.text.decode("utf-8").strip()
 
-                if not heading_text:
-                    continue
+            new_stack = heading_stack[: max(0, level - 1)] + [heading_text]
+            breadcrumb = " > ".join(new_stack)
+            sig = f"{'#' * max(level, 1)} {heading_text}" if heading_stack or "preamble" not in heading_text else "Preamble"
 
-                # Build breadcrumb path
-                breadcrumb = heading_stack[: level - 1] + [heading_text]
-                path_str = " > ".join(breadcrumb)
+            # Emit the entire section body (raw markdown) as one entity.
+            # Child sections are included in this text — that's intentional:
+            # the parent provides broad context; child entities provide
+            # focused precision.  Both are useful for vector search.
+            _emit(
+                entity_type="markdown_section",
+                name=breadcrumb,
+                signature=sig,
+                document_text=child.text.decode("utf-8"),
+                start_lineno=child.start_point[0] + 1,
+                end_lineno=child.end_point[0] + 1,
+            )
 
-                # First paragraph after this heading (for richer document_text)
-                body_text = ""
-                # Walk siblings within the parent section to find the first paragraph
-                parent = child.parent
-                if parent:
-                    found_self = False
-                    for sibling in parent.named_children:
-                        if sibling == child:
-                            found_self = True
-                            continue
-                        if found_self and sibling.type == "paragraph":
-                            # Extract inline text
-                            for pchild in sibling.named_children:
-                                if pchild.type == "inline":
-                                    body_text = pchild.text.decode("utf-8").strip()
-                                    break
-                            break
-                        if found_self and sibling.type in ("atx_heading", "fenced_code_block", "section"):
-                            break
+            # Recurse into nested child sections
+            _walk(child, new_stack)
 
-                signature = f"{'#' * level} {heading_text}"
-                document_text = signature
-                if body_text:
-                    document_text += "\n" + body_text
+    _walk(root, [])
 
-                entities.append(CodeEntity(
-                    entity_type="heading",
-                    name=path_str,
-                    signature=signature,
-                    docstring=None,
-                    document_text=document_text,
-                    file_path=file_path,
-                    language=config.display_name,
-                    lineno=child.start_point[0] + 1,
-                    end_lineno=child.end_point[0] + 1,
-                    parent_class=None,
-                    decorators=[],
-                    params=[],
-                    return_type=None,
-                ))
+    # -------------------------------------------------------------------
+    # Loose non-section nodes at document root (code blocks, HTML blocks,
+    # etc. that tree-sitter-markdown places outside any section).
+    # -------------------------------------------------------------------
 
-            elif child.type == "fenced_code_block":
-                info_string = ""
-                code_content = ""
-                for sub in child.named_children:
-                    if sub.type == "info_string":
-                        info_string = sub.text.decode("utf-8").strip()
-                    elif sub.type == "code_fence_content":
-                        code_content = sub.text.decode("utf-8").strip()
+    loose_parts: list[str] = []
+    loose_start: int | None = None
+    loose_end: int | None = None
 
-                if not code_content:
-                    continue
+    for child in root.named_children:
+        if child.type == "section":
+            continue  # already handled by _walk
+        text = child.text.decode("utf-8").strip()
+        if text:
+            loose_parts.append(text)
+            if loose_start is None:
+                loose_start = child.start_point[0] + 1
+            loose_end = child.end_point[0] + 1
 
-                lang = info_string if info_string else "text"
-                signature = f"```{lang}"
-                document_text = f"```{lang}\n{code_content}\n```"
-
-                entities.append(CodeEntity(
-                    entity_type="code_block",
-                    name=lang,
-                    signature=signature,
-                    docstring=None,
-                    document_text=document_text,
-                    file_path=file_path,
-                    language=config.display_name,
-                    lineno=child.start_point[0] + 1,
-                    end_lineno=child.end_point[0] + 1,
-                    parent_class=None,
-                    decorators=[],
-                    params=[],
-                    return_type=None,
-                ))
-
-            elif child.type == "section":
-                # Recurse into subsections with inherited breadcrumb
-                _walk_sections(child, heading_stack)
-
-    _walk_sections(root, [])
+    if loose_parts:
+        _emit(
+            entity_type="markdown_section",
+            name=f"{file_path} (loose)",
+            signature="Loose content",
+            document_text="\n\n".join(loose_parts),
+            start_lineno=loose_start or 1,
+            end_lineno=loose_end or 1,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1113,10 +1218,11 @@ def _extract_markdown(
 
 
 def _clean_docstring(docstring: str) -> str:
-    """Clean up a docstring/JSDoc for embedding text.
+    """Clean a docstring/JSDoc into embedding-ready text.
 
-    Strips quotes and JSDoc markers, joins meaningful lines,
-    and returns the full text (no truncation).
+    Strips triple quotes and JSDoc markers from the raw text, joins
+    consecutive meaningful lines (stops at first blank line). Returns
+    the full extracted text with no truncation. Pure.
     """
     if not docstring:
         return ""

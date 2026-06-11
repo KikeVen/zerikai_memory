@@ -1,6 +1,7 @@
 .git/
 node_modules/
 __pycache__/
+**/__pycache__/
 venv/
 .brain/vector_db/
 docs/

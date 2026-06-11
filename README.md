@@ -1,8 +1,8 @@
-# Zerikai Memory
+<p align="center">
+  <img width="908" height="510" src="zm_logo_70.png">
+</p>
 
 A standalone local-only Python MCP server that gives any IDE persistent, workspace-isolated memory. Combines ChromaDB (local vector store), Ollama (free local summarisation), and DeepSeek (cloud synthesis) with automatic cost-aware routing.
-
-![memory](zerikai_memory.png)
 
 ---
 
@@ -15,14 +15,15 @@ A standalone local-only Python MCP server that gives any IDE persistent, workspa
 5. [Prerequisites](#prerequisites)
 6. **[Installation](#installation)** *
 7. [IDE Registration](#ide-registration)
+    - [IDE Agent Rules](#ide-agent-rules)
 8. [Workspace Setup (per project)](#workspace-setup-per-project)
-9. [Day-to-Day Usage](#day-to-day-usage)
-10. [Auto-Routing Reference](#auto-routing-reference)
-11. [Project Brief Structure](#project-brief-structure)
-12. [MCP Tools Reference](#mcp-tools-reference)
-13. [Monitoring & Logs](#monitoring--logs)
-14. [Auxiliary Scripts](#auxiliary-scripts)
-15. [Embedding-Docstring Skill](#embedding-docstring-skill)
+9. [Embedding-Docstring Skill](#embedding-docstring-skill)
+10. [Day-to-Day Usage](#day-to-day-usage)
+11. [Auto-Routing Reference](#auto-routing-reference)
+12. [Project Brief Structure](#project-brief-structure)
+13. [MCP Tools Reference](#mcp-tools-reference)
+14. [Monitoring & Logs](#monitoring--logs)
+15. [Auxiliary Scripts](#auxiliary-scripts)
 16. [DeepSeek KV Cache Optimisation](#deepseek-kv-cache-optimisation)
 17. [Security & Data Privacy](#security--data-privacy)
 18. [Troubleshooting](#troubleshooting)
@@ -48,8 +49,20 @@ The server runs **entirely on your local machine**. Each IDE connects via STDIO 
 Most recent updates are listed in the changelog below. Click to expand:
 
 <details>
+<summary>New Updates 2026-06-10</summary>
 
-**<summary>New Updates 2026-05-27</summary>**
+- **High-Granularity Brief Synthesis:** Optimized `_build_section` in `main.py`: fetches a wide re-ranking pool (75) with keyword matching across entity name, docstring, and `source_file`; supports per-section `full_context` and adjustable `fetch_cap` trimming (default 20, 25 for Architecture). Lets Architecture, Data Flow, and Convention sections extract deep details while keeping LLM calls cost-controlled.
+- **Roadmap Extraction Fix:** Patched a critical bug in `_truncate_for_brief` that caused roadmap retrieval from `todo.md` to break at the first blank line. The project brief now correctly captures the full multi-point roadmap.
+- **Enhanced Retrieval Accuracy:** Refined the iterative synthesis engine to use section-specific semantic queries, ensuring the final brief prominently features core logic like tree-sitter parsing and lexical re-ranking.
+- **Async background scanning:** `scan_workspace` returns immediately and runs in background. No more MCP timeouts on large codebases. Four concurrent workers parse files via tree-sitter; entities batch-upserted to ChromaDB (300 per call). LLM calls gated by semaphore(2).
+- **`scan_status` tool:** Tracks scan progress and brief synthesis independently — file count, entities, errors, elapsed, brief status (pending/running/complete/failed). Agents poll this after `scan_workspace`.
+- **Batch writes:** Per-file batch `upsert()` replaces per-entity calls. One lock acquisition per file instead of per entity.
+- **`SKIP_BARE_PY_FILES` renamed to `SKIP_BARE_FILES`:** Boolean toggle → configurable extension list (`['.py', '.html', '.md', '.css']`). Bare files with zero tree-sitter entities no longer fall through to LLM summarisation.
+- **Brief status auto-update:** `scan_status` now reflects brief completion ("Complete"/"Failed") in real time.
+</details>
+
+<details>
+<summary>Updates 2026-05-27</summary>
 
 - **IDE Agent Rules:** New [`agent_rules/ide_agent_rules.md`](agent_rules/ide_agent_rules.md) with two behavioral rules — *Universal-Brain First* (query memory before raw file searches) and *Source Discipline* (always surface `file:line` citations with confidence scores). Includes per-IDE setup instructions for VS Code Copilot, pi.dev, Google Antigravity, and Claude Desktop. Applied rules prevent agents from skipping memory or fabricating answers.
 - **README:** New `### IDE Agent Rules` subsection under IDE Registration summarising the rules and linking to the file. `agent_rules/` added to the project structure tree.
@@ -58,42 +71,36 @@ Most recent updates are listed in the changelog below. Click to expand:
 
 <details>
 
-**<summary>Updates 2026-05-17</summary>**
+<summary>Updates 2026-05-17</summary>
 
 - **Inline source citations:** Replaced the `## Sources` Markdown table with plain-text `#file:line (distance)` citations. Renders in every IDE without broken tables; clickable in VS Code Copilot. Tested against Copilot, Claude Desktop, Antigravity, and pi with documented agent behavior differences.
 
 </details>
 
 <details>
-
-**<summary>Updates 2026-05-13</summary>**
+<summary>Updates 2026-05-13</summary>
 
 - **Lexical re-ranking in `query_memory`:** New hybrid search step: after semantic retrieval, results are reordered by keyword overlap in entity names and docstrings. Solves false positives where functions with shared vocabulary (e.g. "tree-sitter", "extract") crowd out the correct match. `ENABLE_LEXICAL_RERANK=true` activates it; `LEXICAL_RERANK_WEIGHT` (default 0.05) controls boost per keyword hit. Pure reorder, nothing dropped. Default off.
 - **Agent-aware tool descriptions:** All 15 MCP tool docstrings reviewed and tuned for AI agent consumption (Copilot, Claude Desktop, Antigravity). Agents now receive priority directives, anti-pattern hints, and "when not to use" guidance directly in the tool schema, reducing trial-and-error probing.
 - **`save_to_memory` docstring rewritten:** Leads with use-case semantics (*"Manually save an architectural decision, fact, or technical note"*) instead of implementation details. Adds explicit routing hint: *"it's not for code files, `scan_workspace` handles those."*
 - **Priority directives now explicit:** `get_brief` says *"Use this FIRST on any new workspace."* `query_memory` says *"Use this BEFORE reasoning from priors."* `list_memory` warns *"not to answer code questions, use `query_memory`."* `resolve_workspace` identifies itself as *"a helper tool for agents that don't have filesystem context."*
 - **Irreversible operations flagged:** `merge_workspaces` and `purge_usage_data` both carry a *"Cannot be undone"* warning visible to the agent before execution.
-
 </details>
 
 <details>
-
-**<summary>Updates 2026-05-12</summary>**
+<summary>Updates 2026-05-12</summary>
 
 - **Parallel brief synthesis:** All 9 brief sections now fire simultaneously via `asyncio.gather`. Brief generation dropped *from ~90 seconds to ~20-30 seconds*.
-- Skip bare `.py` files: New `SKIP_BARE_PY_FILES` toggle in `.env`. Skips `.py` files with no functions or classes (`admin.py`, `urls.py`, `settings.py`) to avoid DeepSeek calls on boilerplate.
- Default off.
+- Skip bare `.py` files: New `SKIP_BARE_PY_FILES` toggle in `.env`. Skips `.py` files with no functions or classes (`admin.py`, `urls.py`, `settings.py`) to avoid DeepSeek calls on boilerplate. Default off.
 - **HTML comment indexing:** _extract_html now captures `<!-- -->` comments as docstrings for the elements that follow. Comments are searchable and appear in inline source citations.
 - **Embedding-docstring skill:** Updated to cover HTML comments in addition to *Python*, *JavaScript*, and *TypeScript* docstrings.
 - **Brief timing corrected:** Status messages updated from "about 90 seconds" to "about 20 seconds."
 - **Primary Conventions prompt tightened:** Briefs no longer include filler sections like Naming Conventions or Testing infrastructure.
 - **use_cloud default:** `synthesize_deep_brief` now defaults to cloud mode.
-
 </details>
 
 <details>
-
-**<summary>Update - 2026-05-11</summary>**
+<summary>Updates 2026-05-11</summary>
 
 - **Inline source citations**: Every `query_memory` response prepends inline `#file:line (distance)` citations — plain text, cross-agent compatible, clickable in VS Code Copilot.
 - **Full docstrings embedded**: `_clean_docstring` no longer truncates to first sentence; the LLM sees complete function descriptions for richer answers.
@@ -101,7 +108,6 @@ Most recent updates are listed in the changelog below. Click to expand:
 - **Fire-and-forget brief synthesis**: `scan_workspace` returns immediately; brief generates in background, no more MCP timeouts.
 - **Tighter distance threshold**: Default `QUERY_DISTANCE_THRESHOLD=1.0` in `.env`, eliminating false positives.
 - **Embedding-docstring skill**: A companion skill (`embedding-docstring/SKILL.md`) that audits docstrings for embedding quality: technology naming, routing documentation, guarantees, and size limits.
-
 </details>
 
 ---
@@ -144,6 +150,10 @@ Query → embed → ChromaDB top-N → lexical re-rank → LLM synthesis
 4. **LLM synthesis** — The reordered context is passed to DeepSeek or Ollama for
    the final answer.
 
+**Brief generation** uses the same scoring formula but with a wider ChromaDB pool
+(75), additional `source_file` keyword matching, and per-section `fetch_cap`
+trimming — all configured inside `_build_section` in `main.py`.
+
 ### Workspace Identity
 
 You do not specify your project name or path in chat. Your IDE automatically attaches metadata about your currently active workspace to every message. The server maintains a **Workspace Registry** (SQLite) that maps each workspace folder to a persistent UUID and human-friendly display name.
@@ -154,7 +164,7 @@ The AI assistant can resolve any workspace identifier: UUID, short-UUID, or disp
 
 ## Cost Savings Explained
 
-DeepSeek is invoked in three places: query synthesis (when auto-routed for long or architectural queries), brief synthesis (9 section calls totalling ~ \$0.003 per full regeneration), and file scanning when in cloud mode (~ \$0.000167 per file). In hybrid mode, routine queries and file scans run on Ollama at \$0. The Project Brief is a fixed prefix across queries, so DeepSeek caches it at \$0.0028/M tokens (hit) vs \$0.14/M (miss), 50x cheaper after the first query. Code files are parsed locally by tree-sitter at zero API cost regardless of mode. All IDEs share the same .brain/ directory, so context saved in one is instantly available in another with no re-explanation cost. Every query_memory response includes inline #file:line citations with entity name and L2 distance. This metadata is already stored during scanning at no extra API cost.
+DeepSeek is invoked in three places: query synthesis (when auto-routed for long or architectural queries), brief synthesis (9 section calls totalling ~ \$0.003 per full regeneration), and file scanning when in cloud mode (~ \$0.000167 per file). In hybrid mode, routine queries and file scans run on Ollama at \$0. The Project Brief is a fixed prefix across queries, so DeepSeek caches it at \$0.0028/M tokens (hit) vs \$0.14/M (miss), 50x cheaper after the first query. Code files are parsed locally by tree-sitter at zero API cost regardless of mode. Files with zero tree-sitter entities can still trigger LLM calls; set `SKIP_BARE_FILES` in `.env` to prevent this. All IDEs share the same .brain/ directory, so context saved in one is instantly available in another with no re-explanation cost. Every query_memory response includes inline #file:line citations with entity name and L2 distance. This metadata is already stored during scanning at no extra API cost.
 
 ---
 
@@ -212,6 +222,8 @@ pip install -r requirements.txt
 
 ### Step 2: Configure `.env`
 
+> **Upgrading from an older version?** If you used `SKIP_BARE_PY_FILES=true`, replace it with `SKIP_BARE_FILES=['.py', '.html', '.md', '.css']`. The old boolean toggle is no longer read.
+
 Configure via `MEMORY_MODE` in your `.env` file.
 
 | Mode | LLM Strategy | Best For |
@@ -226,7 +238,7 @@ Configure via `MEMORY_MODE` in your `.env` file.
 
 <details>
 
-**<summary>Expand to view .env</summary>**
+<summary>Expand to view .env</summary>
 
 ```.env
 DEEPSEEK_API_KEY=your_deepseek_key_here
@@ -252,13 +264,12 @@ ENABLE_DEEPSEEK_PRO=false
 # Typical: <0.8 strong match, 0.8-1.5 related, >1.5 noise.
 QUERY_DISTANCE_THRESHOLD=1.0
 
-# When True, .py files that produce zero tree-sitter entities (no functions or
-# classes found) are skipped during scanning instead of sent to DeepSeek for
-# LLM summarisation. Saves API calls on files like admin.py, urls.py, settings.py,
-# wsgi.py that have only variable assignments and module-level code.
-# Default: false (existing behaviour — all such files are LLM-summarised).
-# Set to "true" to skip them.
-SKIP_BARE_PY_FILES=true
+# File extensions to skip during scanning when tree-sitter produces zero
+# entities (no functions, classes, headings, semantic HTML elements, etc.).
+# Saves API calls on bare config files, trivial templates, empty CSS, etc.
+# Format: ['.py', '.html', '.md', '.css']
+# Default: [] (empty — no extensions skipped, all fall through to LLM).
+SKIP_BARE_FILES=['.py', '.html', '.md', '.css']
 
 # Enable lexical re-ranking in query_memory.
 # When true, results passing the distance threshold are reordered by a
@@ -305,15 +316,17 @@ The server starts **once** when the IDE loads and stays running. Tool calls are 
 
 1. Press `Ctrl+Shift+P` → **MCP: Add Local Server**
 2. Choose **STDIO**
-3. Set command to: `C:\path\to\zerikai_memory\venv\Scripts\python.exe C:\path\to\zerikai_memory\main.py`
+3. Set command to: `C:\\path\\to\\zerikai_memory\\venv\\Scripts\\python.exe C:\\path\\to\\zerikai_memory\\main.py`
 
-> Replace `C:\path\to\zerikai_memory` with the actual absolute path. Double backslashes are required for valid JSON on Windows.
+> Replace `C:\\path\\to\\zerikai_memory` with the actual absolute path. Double backslashes are required for valid JSON on Windows.
+
+**On macOS/Linux, use forward slashes:** `/path/to/zerikai_memory/venv/bin/python`
 
 **To see other registrations click on the collapsed section below:**
 
 <details>
 
-**<summary>Google Antigravity</summary>**
+<summary>Google Antigravity</summary>
 
 Edit `mcp_config.json` directly:
 
@@ -331,7 +344,7 @@ Edit `mcp_config.json` directly:
 
 <details>
 
-**<summary>Cursor</summary>**
+<summary>Cursor</summary>
 
 Add to `.cursor/mcp.json`:
 
@@ -350,7 +363,7 @@ Add to `.cursor/mcp.json`:
 
 <details>
 
-**<summary>Claude Desktop</summary>**
+<summary>Claude Desktop</summary>
 
 **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
 **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
@@ -369,8 +382,6 @@ Add to `.cursor/mcp.json`:
 ```
 
 </details>
-
-**On macOS/Linux, use forward slashes:** `/path/to/zerikai_memory/venv/bin/python`
 
 ### IDE Agent Rules
 
@@ -393,9 +404,11 @@ Works like `.gitignore`: one pattern per line. `scan_workspace` reads this file 
 
 Each project should have its own `.memignore` in its root directory. Forgetting to configure it before the first scan is the most common reason to use `drop_memory.py` and start fresh:
 
+**Examples of what to ignore:** Expand to view
+
 <details>
 
-**<summary>Sample .memignore</summary>**
+<summary>Sample .memignore</summary>
 
 ```gitignore
 # Directories (trailing slash required)
@@ -442,12 +455,16 @@ Tell your assistant:
 "Scan and index the workspace."
 ```
 
-The assistant calls `scan_workspace`. This triggers the **Post-Scan Auto-Briefing**:
+The assistant calls `scan_workspace`, which **returns immediately** and runs the scan in background. The assistant then polls `scan_status` until completion.
 
-1. Walks the directory (respecting `.memignore`). Supported code files are parsed into deterministic `tree-sitter` entities, while other text files get compressed summaries.
-2. Performs **iterative synthesis**: queries memory for up to 75 relevant `tree-sitter` nodes/summaries per section across 9 project brief sections.
-3. Uses the auto-router (DeepSeek in Hybrid/Cloud modes) to synthesise a complete, accurate **Project Brief**.
+**What happens in background:**
+
+1. Walks the directory (respecting `.memignore`). Supported code files are parsed into deterministic `tree-sitter` entities via 4 concurrent workers. Non-code files get compressed LLM summaries (gated by semaphore).
+2. Entities are batch-upserted to ChromaDB (up to 300 per call) for maximum throughput.
+3. Performs **iterative synthesis**: queries memory for up to 75 relevant `tree-sitter` nodes/summaries per section across 9 project brief sections.
 4. Saves the brief to `.brain/contexts/<workspace_id>.md` and locks it to protect your DeepSeek KV cache prefix.
+
+> **Agent workflow after timeout:** If the MCP client times out, the scan continues in background. The agent calls `scan_status` to check progress and confirm completion.
 
 > **Cache Stability Policy:** Normal daily scans do **not** regenerate the project brief. The brief is only generated on the first scan or when explicitly forced.
 
@@ -463,6 +480,40 @@ The assistant calls `scan_workspace(force_refresh_brief=True)`.
 
 ---
 
+## Embedding-Docstring Skill
+
+The embedding-docstring skill (`embedding-docstring/SKILL.md`) is a companion skill that helps maintain docstring quality across any codebase. It audits functions, methods, and classes for embedding-optimized docstrings that are rich, dense, and keyword-accurate so semantic search retrieves them correctly.
+
+### What it checks
+
+- **Technology names**: If the code imports `redis`, the docstring should say "Redis", not "key-value store". The embedding matches words, not concepts.
+- **Routing / branches**: "Uses tree-sitter for code files, falls back to LLM summarization": decision logic must be documented.
+- **Guarantees**: Idempotency, atomicity, ordering, or "no guarantees" stated explicitly.
+- **Side effects**: What the function writes, calls, or mutates beyond its return value.
+- **Size limit**: Prose body above `Args:`/`Returns:` capped at 4 lines or 400 characters, whichever is shorter.
+
+### How to use it
+
+In any workspace, tell your assistant:
+
+```
+audit docstrings in api_handler.py using the embedding-docstring skill
+```
+
+or for a single function:
+
+```
+optimize the docstring for authenticate_user for vector search
+```
+
+The skill reads the source, applies the checklist, flags violations with line numbers, and proposes before/after diffs for approval. It works with Python, JavaScript, TypeScript, and any language with docstring conventions.
+
+### Why it exists
+
+Docstrings that are too short, too vague, or missing technology names starve semantic search. The LLM can only synthesize from what's embedded. The skill ensures every docstring carries enough keyword density to be findable.
+
+---
+
 ## Day-to-Day Usage
 
 ### Scan
@@ -471,11 +522,14 @@ The assistant calls `scan_workspace(force_refresh_brief=True)`.
 "Scan the workspace."
 ```
 
+`scan_workspace` returns immediately and runs in background. The agent polls `scan_status` to confirm completion.
+
 `scan_workspace` is **idempotent and self-cleaning**:
 
 - Uses deterministic hashing to overwrite existing file records (no duplicates).
 - Automatically **purges stale memories** for files deleted or added to `.memignore` since the last scan.
-- Does **not** regenerate the project brief, preserving your KV cache.
+- Does **not** regenerate the project brief (unless forced), preserving your KV cache.
+- Re-scanning cancels any in-progress scan for that workspace.
 
 ### Common natural-language commands
 
@@ -559,7 +613,8 @@ You never call these tools directly, your AI assistant calls them based on your 
 
 | Tool | Description |
 |---|---|
-| `scan_workspace` | Walks the directory, respects `.memignore`, and saves all readable text files to persistent memory. Idempotent and self-cleaning. |
+| `scan_workspace` | Starts a background scan. Returns immediately; use `scan_status` to track progress. Walks the directory, respects `.memignore`, saves all readable text files to persistent memory. Idempotent and self-cleaning. Concurrent (4 workers, batch writes). |
+| `scan_status` | Returns progress of a running or recently completed background scan: files scanned, entities indexed, errors, elapsed time, brief status. |
 | `save_to_memory` | Manually saves an architectural decision, fact, or technical note with an optional category tag. |
 | `list_memory` | Lists stored memories for a workspace, optionally filtered by category. |
 | `query_memory` | Retrieves relevant context via vector search and synthesises an answer via Ollama or DeepSeek (auto-routed). Returns inline `#file:line (distance)` citations — plain text that renders in every IDE, clickable in VS Code Copilot. Defaults to on; set `show_sources=False` for clean output. |
@@ -647,38 +702,6 @@ Find workspace names and IDs with `list_workspaces` or by listing `.brain/contex
 After wiping, fix your `.memignore`, then re-run `init_workspace` and `scan_workspace`.
 
 ---
-
-## Embedding-Docstring Skill
-
-The embedding-docstring skill (`embedding-docstring/SKILL.md`) is a companion skill that helps maintain docstring quality across any codebase. It audits functions, methods, and classes for embedding-optimized docstrings that are rich, dense, and keyword-accurate so semantic search retrieves them correctly.
-
-### What it checks
-
-- **Technology names**: If the code imports `redis`, the docstring should say "Redis", not "key-value store". The embedding matches words, not concepts.
-- **Routing / branches**: "Uses tree-sitter for code files, falls back to LLM summarization": decision logic must be documented.
-- **Guarantees**: Idempotency, atomicity, ordering, or "no guarantees" stated explicitly.
-- **Side effects**: What the function writes, calls, or mutates beyond its return value.
-- **Size limit**: Prose body above `Args:`/`Returns:` capped at 4 lines or 400 characters, whichever is shorter.
-
-### How to use it
-
-In any workspace, tell your assistant:
-
-```
-audit docstrings in api_handler.py using the embedding-docstring skill
-```
-
-or for a single function:
-
-```
-optimize the docstring for authenticate_user for vector search
-```
-
-The skill reads the source, applies the checklist, flags violations with line numbers, and proposes before/after diffs for approval. It works with Python, JavaScript, TypeScript, and any language with docstring conventions.
-
-### Why it exists
-
-Docstrings that are too short, too vague, or missing technology names starve semantic search. The LLM can only synthesize from what's embedded. The skill ensures every docstring carries enough keyword density to be findable.
 
 ## DeepSeek KV Cache Optimisation
 

@@ -1,3 +1,12 @@
+"""Configuration hub for the zerikai_memory MCP server.
+
+Defines all environment-variable-driven settings, API credentials,
+pricing tables, and routing thresholds used by main.py. Loaded once
+at import time via python-dotenv. No side effects beyond reading
+os.environ and creating DB_PATH.
+"""
+
+import ast
 import os
 from pathlib import Path
 
@@ -89,12 +98,11 @@ CLOUD_ESCALATION_KEYWORDS = {
 # Typical ranges: <0.8 strong match, 0.8-1.5 related, >1.5 noise.
 QUERY_DISTANCE_THRESHOLD = float(os.getenv("QUERY_DISTANCE_THRESHOLD", "1.5"))
 
-# When True, .py files that produce zero tree-sitter entities (no functions or
-# classes found) are skipped during scanning instead of falling through to LLM
-# summarisation. Saves DeepSeek API calls on files like admin.py, urls.py,
-# settings.py, wsgi.py that have only variable assignments and registration calls.
-# Default: False (existing behaviour — all such files are LLM-summarised).
-SKIP_BARE_PY_FILES = os.getenv("SKIP_BARE_PY_FILES", "false").lower() == "true"
+# File extensions to skip during scanning when tree-sitter produces zero
+# entities. Saves API calls on files with no extractable functions, classes,
+# or structural elements. Format: ['.py', '.html', '.md', '.css']
+# Default: [] (empty — no extensions skipped)
+SKIP_BARE_FILES = set(ast.literal_eval(os.getenv("SKIP_BARE_FILES", "[]")))
 
 # Lexical re-ranking in query_memory
 # When enabled, results are reordered by: (1/dist) + (hits * weight).

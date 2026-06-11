@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 import threading
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -34,7 +35,7 @@ from config import (
     OLLAMA_HOST,
     OLLAMA_MODEL,
     QUERY_DISTANCE_THRESHOLD,
-    SKIP_BARE_PY_FILES,
+    SKIP_BARE_FILES,
     SYNTHESIZE_WITH_CLOUD,
     ZERIKAI_DB,
 )
@@ -408,7 +409,7 @@ def _truncate_for_brief(doc: str) -> str:
     for line in lines:
         stripped = line.strip()
         if not stripped:
-            break
+            continue
         meaningful.append(stripped)
     result = " ".join(meaningful)
     dot = result.find(". ")
@@ -424,9 +425,22 @@ async def _build_section(
     use_cloud: bool,
     workspace_id: str,
 ) -> tuple[str, str]:
-    """Build one brief section: query ChromaDB, build context, call LLM.
-    Runs independently so all 9 sections can fire in parallel.
-    Returns (heading, content) on success, (heading, error) on failure.
+    """Build one brief section: queries ChromaDB (pool=75), lexically
+    re-ranks by keyword overlap in entity name, docstring, and source_file,
+    trims to per-section fetch_cap, then feeds reordered context to DeepSeek
+    or Ollama. Runs via asyncio.gather — all 9 sections fire in parallel.
+    Side effect: writes token usage to zerikai.db sqlite3.
+
+    Args:
+        section: Dict with query, prompt_template, heading, optional
+                 fetch_cap (default 20) and full_context (bool).
+        collection: ChromaDB collection for this workspace.
+        display_name: Project name for prompt formatting.
+        use_cloud: True → DeepSeek, False → Ollama.
+        workspace_id: UUID for _track_token_usage logging.
+
+    Returns:
+        (heading, content) on success, (heading, error) on failure.
     """
     heading = section["heading"]
     log.info("_synthesize_deep_brief | Generating: %s", heading)
@@ -434,29 +448,62 @@ async def _build_section(
     try:
         with _db_lock:
             total_docs = collection.count()
-            fetch_count = min(75, total_docs) if total_docs > 0 else 1
+            # Fetch a wide pool (up to 75) for re-ranking, then trim to
+            # the per-section fetch_cap before sending to the LLM.
+            # This lets the re-rank pull in semantically-distant but
+            # keyword-relevant files (e.g. todo.md, ROADMAP.md).
+            pool_size = min(75, total_docs) if total_docs > 0 else 1
             results = collection.query(
                 query_texts=[section["query"]],
-                n_results=fetch_count,
+                n_results=pool_size,
                 where={"category": "codebase"},
+                include=["documents", "metadatas", "distances"],
             )
 
         docs = results.get("documents", [[]])[0]
         metas = results.get("metadatas", [[]])[0]
+        distances = results.get("distances", [[]])[0]
         if not docs:
             with _db_lock:
                 fallback = collection.get(
-                    where={"category": "codebase"}, limit=fetch_count)
+                    where={"category": "codebase"}, limit=pool_size)
             docs = fallback.get("documents", [])
             metas = fallback.get("metadatas", [])
+            distances = [1.0] * len(docs)
 
-        context_parts = []
-        for doc, meta in zip(docs, metas or [{}] * len(docs)):
+        # ── Lexical re-rank: boost results whose filename, entity name, or
+        # content share keywords with the section query.  Same scoring
+        # formula used by query_memory, extended with source_file so that
+        # files named todo.md, ROADMAP.md, CHANGELOG.md surface naturally.
+        query_terms = set(section["query"].lower().split())
+        scored = []
+        for doc, meta, dist in zip(docs, metas or [{}] * len(docs), distances):
             if (meta or {}).get("source_type") == "manual":
                 continue
+            name = (meta or {}).get("name", "").lower()
+            text = doc.lower()
+            src_file = (meta or {}).get("source_file", "").lower()
+            hits = sum(
+                1 for t in query_terms
+                if t in name or t in text or t in src_file
+            )
+            score = (1 / dist) + (hits * LEXICAL_RERANK_WEIGHT)
+            scored.append((score, doc, meta))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        # Trim to per-section cap for LLM cost control
+        llm_cap = section.get("fetch_cap", 20)
+        scored = scored[:llm_cap]
+
+        context_parts = []
+        for _score, doc, meta in scored:
             src = (meta or {}).get("source_file", "")
             header = f"### {src}\n" if src else ""
-            context_parts.append(f"{header}{_truncate_for_brief(doc)}")
+            if section.get("full_context"):
+                context_parts.append(f"{header}{doc}")
+            else:
+                context_parts.append(f"{header}{_truncate_for_brief(doc)}")
         context = "\n\n".join(context_parts)
         prompt = section["prompt_template"].format(context=context)
 
@@ -495,11 +542,11 @@ async def _build_section(
 
 
 async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud: bool = True) -> str:
-    """Iteratively builds a 9-section project brief by querying
-    ChromaDB with section-specific searches, feeding ~10-15
-    results per section to DeepSeek or Ollama. Tracks token usage.
-    Guard: returns minimal brief if no codebase data exists.
-    Per-section fallback: grabs all context if query returns empty.
+    """Builds a 9-section project brief: fires all section-specific
+    ChromaDB queries in parallel via asyncio.gather, delegating each to
+    _build_section for lexical re-ranking, pool sizing, and fetch_cap
+    trimming. Routes to DeepSeek or Ollama based on SYNTHESIZE_WITH_CLOUD.
+    Side effect: saves assembled markdown to .brain/contexts/<id>.md.
 
     Args:
         workspace_id: The workspace UUID (for collection access)
@@ -561,6 +608,8 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
         {
             "heading": "## Core Architecture",
             "query": "architecture components structure models views api routes data flow patterns authentication services",
+            "full_context": True,
+            "fetch_cap": 25,
             "prompt_template": (
                 f"You are a senior software architect analyzing the `{display_name}` project. "
                 "Based on the following file summaries from the codebase, describe the Core Architecture. "
@@ -643,6 +692,8 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
             ),
         },
         {
+            "full_context": True,
+            "fetch_cap": 25,
             "heading": "## Data Flow & Request Lifecycle",
             "query": "request response flow authentication lifecycle pipeline process middleware routing data flow",
             "prompt_template": (
@@ -664,6 +715,8 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
         {
             "heading": "## Future Roadmap",
             "query": "todo future roadmap planned features upcoming improvements milestones backlog scaling roadmap",
+            "full_context": True,
+            "fetch_cap": 30,
             "prompt_template": (
                 f"You are a senior software architect analyzing the `{display_name}` project. "
                 "Based on the following file summaries from the codebase (look for TODOs, FIXME, comments about future changes, documented roadmaps, or explicit plans), "
@@ -697,17 +750,54 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
     return final_brief
 
 
-async def _background_brief_synthesis(workspace_id: str, display_name: str, context_file: Path) -> None:
+# ---------------------------------------------------------------------------
+# Background scan progress tracking
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ScanProgress:
+    """Tracks progress of a background workspace scan. Written by
+    _background_scan during file processing and _background_brief_synthesis
+    for brief_status transitions (pending → running → Complete/Failed).
+    Read by scan_status for user-facing progress reports. Plain dataclass
+    — no methods, no side effects beyond field mutation by callers.
+    """
+    workspace_id: str
+    display_name: str
+    total_files: int
+    scanned: int = 0
+    entities: int = 0
+    skipped: int = 0
+    errors: int = 0
+    started_at: float = field(default_factory=lambda: datetime.now(timezone.utc).timestamp())
+    completed: bool = False
+    brief_status: str = "pending"  # pending, running, complete, failed
+
+
+# Module-level registry of active/recent scans, keyed by workspace_id
+_scans: dict[str, ScanProgress] = {}
+_scan_tasks: dict[str, asyncio.Task] = {}
+
+
+async def _background_brief_synthesis(
+    workspace_id: str,
+    display_name: str,
+    context_file: Path,
+    progress: ScanProgress | None = None,
+) -> None:
     """Fire-and-forget brief synthesis after scan to avoid MCP
     timeouts. Delegates to _synthesize_deep_brief (cloud/local
     via SYNTHESIZE_WITH_CLOUD). Creates/overwrites
-    .brain/contexts/<id>.md. Errors logged, not propagated.
-    """
+    .brain/contexts/<id>.md. Updates progress.brief_status if provided."""
     try:
         new_brief = await _synthesize_deep_brief(workspace_id, display_name, use_cloud=SYNTHESIZE_WITH_CLOUD)
         context_file.write_text(new_brief, encoding="utf-8")
+        if progress:
+            progress.brief_status = "Complete"
         log.info("_background_brief_synthesis | brief saved for %s", display_name)
     except Exception as exc:
+        if progress:
+            progress.brief_status = "Failed"
         log.error("_background_brief_synthesis | failed for %s: %s",
                   display_name, exc)
 
@@ -784,7 +874,7 @@ _TEXT_EXTENSIONS = {
 }
 
 # Never read files larger than this (bytes).
-_MAX_FILE_BYTES = 100_000  # Increased from 64KB to 100KB to include main.py
+_MAX_FILE_BYTES = 200_000  # Increased from 100KB to 200KB to include main.py
 
 # Files larger than this (in lines) are split into chunks before indexing.
 # Prevents DeepSeek from truncating structured extraction on large files.
@@ -901,6 +991,9 @@ def _select_model(user_query: str) -> str:
     return DEEPSEEK_MODEL_FAST
 
 
+
+# ---------------------------------------------------------------------------
+
 # ---------------------------------------------------------------------------
 # Tool: init_workspace
 # ---------------------------------------------------------------------------
@@ -935,7 +1028,7 @@ async def init_workspace(workspace_path: str) -> str:
     return (
         f"Workspace registered: `{display_name}`\n"
         f"Workspace ID: `{workspace_id[:8]}`\n\n"
-        f"Next step:\n"
+        f"Next step — copy/paste this into your chat to start scanning:\n"
         f"  scan_workspace(workspace=\"{workspace_id[:8]}\")"
     )
 
@@ -953,12 +1046,10 @@ async def save_to_memory(
     last_modified: str | None = None,
 ) -> str:
     """
-    Manually save an architectural decision, fact, or technical note
-    to this workspace's persistent vector memory with an optional
-    category tag. Use this for decisions and notes you want the AI to
-    remember across sessions — it's not for code files (scan_workspace
-    handles those). For supported code files, entities are extracted
-    deterministically via tree-sitter; other formats use LLM summarisation.
+    Save an architectural decision, fact, or technical note to persistent
+    vector memory (ChromaDB). For code files, entities are extracted via
+    tree-sitter; other formats use LLM summarisation. Use scan_workspace for
+    bulk ingestion.
 
     Args:
         content:   The raw content to remember.
@@ -1025,8 +1116,8 @@ async def save_to_memory(
                 )
             # If tree-sitter found nothing (empty file, unsupported constructs),
             # skip bare .py files when configured to avoid DeepSeek calls.
-            if SKIP_BARE_PY_FILES and ext == ".py":
-                return f"[{workspace_id}] Skipped bare .py (no entities): {source_id}"
+            if ext in SKIP_BARE_FILES:
+                return f"[{workspace_id}] Skipped bare {ext} (no entities): {source_id}"
             # fall through to the generic summary path below.
 
         # ---------------------------------------------------------------------------
@@ -1189,15 +1280,13 @@ async def query_memory(
     show_sources: bool = True,
 ) -> str:
     """
-    Query the indexed codebase memory for this workspace. Use this BEFORE
-    reasoning from priors on any question about code location, architecture,
-    function behavior, or file structure. Returns a synthesized answer grounded
-    in the actual codebase — not training data — with inline source citations (#file:line) showing file path, line number, and L2 distance.
+    Query the indexed codebase memory for this workspace. Use BEFORE reasoning
+    from priors on any code-location, architecture, or behavior question.
+    Returns a synthesized answer grounded in actual code with #file:line
+    citations and L2 distance scores.
 
-    Routing is automatic:
-      - Short, specific queries  → Ollama (free, instant)
-      - Long or architectural queries → DeepSeek auto-escalation
-      - Pass use_cloud=True/False to override the auto-router explicitly.
+    Auto-routes short queries to Ollama, long/architectural to DeepSeek.
+    Override with use_cloud=True/False.
 
     Args:
         user_query: The question or topic to look up.
@@ -1650,6 +1739,256 @@ async def get_brief(workspace: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Background scan worker
+# ---------------------------------------------------------------------------
+
+async def _background_scan(
+    workspace_id: str,
+    display_name: str,
+    workspace_root: Path,
+    patterns: list[str],
+    collection,
+    old_ids: set[str],
+    category: str,
+    progress: ScanProgress,
+    force_refresh_brief: bool,
+) -> None:
+    """Runs the full scan loop in background. Updates progress in _scans.
+    Errors are logged, not propagated. Brief synthesis is fire-and-forget."""
+    try:
+        # ── Phase 1: Collect eligible files ──────────────────────────
+        files: list[Path] = []
+        skipped = 0
+        for fp in sorted(workspace_root.rglob("*")):
+            if not fp.is_file():
+                continue
+            if _is_ignored(fp, workspace_root, patterns):
+                skipped += 1
+                continue
+            if fp.suffix.lower() not in _TEXT_EXTENSIONS:
+                skipped += 1
+                continue
+            if fp.stat().st_size > _MAX_FILE_BYTES:
+                skipped += 1
+                log.info("_background_scan | too large, skipping: %s", fp)
+                continue
+            files.append(fp)
+
+        progress.total_files = len(files)
+        progress.skipped = skipped
+        log.info(
+            "_background_scan | %d files queued, %d skipped by filters",
+            len(files), skipped,
+        )
+
+        # ── Phase 2: Concurrent processing ───────────────────────────
+        _parse_sem = asyncio.Semaphore(4)  # limit concurrent file parsing
+        _llm_sem = asyncio.Semaphore(2)    # limit concurrent LLM calls
+
+        # Per-worker result: entities to batch-write, or saved/skipped/error status
+        EntityBatch = tuple[list[str], list[str], list[dict]]  # ids, docs, metas
+        WorkerResult = tuple[Path, str, int, EntityBatch | None]
+        #                           rel_path, status, entity_count, optional batch
+
+        results: list[WorkerResult] = []
+        scanned_ids: set[str] = set()
+
+        async def process_file(fp: Path) -> WorkerResult:
+            """Process one file: tree-sitter or chunk+LLM. Returns result."""
+            rel_path = fp.relative_to(workspace_root).as_posix()
+            last_modified_ts = datetime.fromtimestamp(
+                fp.stat().st_mtime, timezone.utc
+            ).isoformat()
+            ext = fp.suffix.lower()
+
+            try:
+                content = fp.read_text(encoding="utf-8", errors="ignore")
+                if not content.strip():
+                    return (fp, "skipped", 0, None)
+
+                # Tree-sitter extraction
+                if ext in get_supported_extensions():
+                    try:
+                        entities = extract_entities(content, rel_path)
+                    except Exception as exc:
+                        log.warning(
+                            "_background_scan | tree-sitter parse failed for %s: %s",
+                            rel_path, exc,
+                        )
+                        entities = []
+
+                    if entities:
+                        batch_ids: list[str] = []
+                        batch_docs: list[str] = []
+                        batch_metas: list[dict] = []
+                        for entity in entities:
+                            doc_id = hashlib.md5(
+                                f"{workspace_id}:{rel_path}:{entity.name}:{entity.lineno}"
+                                .encode()
+                            ).hexdigest()
+                            meta = {
+                                "category": category,
+                                "workspace": workspace_id,
+                                "source_file": rel_path,
+                                "source_type": "",
+                                "language": entity.language,
+                                "entity_type": entity.entity_type,
+                                "name": entity.name,
+                                "lineno": entity.lineno,
+                                "end_lineno": entity.end_lineno,
+                                "parent_class": entity.parent_class or "",
+                                "return_type": entity.return_type or "",
+                                "has_docstring": entity.docstring is not None,
+                                "params_count": len(entity.params),
+                                "last_modified": last_modified_ts,
+                            }
+                            if entity.decorators:
+                                meta["decorators"] = entity.decorators
+                            batch_ids.append(doc_id)
+                            batch_docs.append(entity.document_text)
+                            batch_metas.append(meta)
+                        return (fp, "entities", len(entities), (batch_ids, batch_docs, batch_metas))
+
+                # Skip bare files when configured
+                if ext in SKIP_BARE_FILES:
+                    log.info(
+                        "_background_scan | skipped bare %s (no entities): %s",
+                        ext, rel_path,
+                    )
+                    return (fp, "skipped", 0, None)
+
+                # Non-code files: chunk + LLM summarization
+                chunks = _chunk_file_content(content)
+                total_chunks = len(chunks)
+                for chunk_idx, chunk_text in enumerate(chunks):
+                    if total_chunks > 1:
+                        chunk_header = (
+                            f"### {rel_path} "
+                            f"[chunk {chunk_idx + 1}/{total_chunks}]\n"
+                        )
+                    else:
+                        chunk_header = f"### {rel_path}\n"
+                    labelled_chunk = f"{chunk_header}{chunk_text}"
+                    if total_chunks > 1:
+                        chunk_source_id = f"{rel_path}::chunk_{chunk_idx + 1}"
+                    else:
+                        chunk_source_id = rel_path
+                    async with _llm_sem:
+                        await save_to_memory(
+                            content=labelled_chunk,
+                            workspace=workspace_id,
+                            category=category,
+                            source_id=chunk_source_id,
+                            last_modified=last_modified_ts,
+                        )
+                        doc_id = hashlib.md5(
+                            f"{workspace_id}:{chunk_source_id}".encode()
+                        ).hexdigest()
+                        scanned_ids.add(doc_id)
+                    log.info(
+                        "_background_scan | saved: %s [chunk %d/%d]",
+                        rel_path, chunk_idx + 1, total_chunks,
+                    )
+                return (fp, "saved", 0, None)
+
+            except Exception as exc:
+                log.error("_background_scan | error reading %s: %s", fp, exc)
+                return (fp, "error", 0, None)
+
+        # Run workers with semaphore
+        async def worker(fp: Path) -> WorkerResult:
+            async with _parse_sem:
+                return await process_file(fp)
+
+        results = list(await asyncio.gather(*[worker(f) for f in files]))
+
+        # ── Phase 3: Aggregate results, batch-write entities ─────────
+        saved = 0
+        entity_count = 0
+        errors = 0
+        all_ids: list[str] = []
+        all_docs: list[str] = []
+        all_metas: list[dict] = []
+
+        for fp, status, count, batch in results:
+            if status == "entities":
+                saved += 1
+                entity_count += count
+                if batch:
+                    all_ids.extend(batch[0])
+                    all_docs.extend(batch[1])
+                    all_metas.extend(batch[2])
+                    scanned_ids.update(batch[0])
+            elif status == "saved":
+                saved += 1
+            elif status == "error":
+                errors += 1
+            # "skipped" — counted during Phase 1
+
+        if all_ids:
+            with _db_lock:
+                collection.upsert(
+                    documents=all_docs,
+                    metadatas=all_metas,
+                    ids=all_ids,
+                )
+            log.info(
+                "_background_scan | batch upserted %d entities from %d files",
+                len(all_ids), saved,
+            )
+
+        progress.scanned = saved + errors
+        progress.entities = entity_count
+        progress.errors = errors
+
+        # ── Phase 4: Purge stale ─────────────────────────────────────
+        stale_ids = list(old_ids - scanned_ids)
+        if stale_ids:
+            with _db_lock:
+                collection.delete(ids=stale_ids)
+            log.info("_background_scan | purged %d stale memories for %s",
+                     len(stale_ids), workspace_id)
+
+        # ── Phase 5: Brief synthesis ──────────────────────────────────
+        context_dir = Path(DB_PATH) / "contexts"
+        context_file = context_dir / f"{workspace_id}.md"
+        brief_status = "No (Cache Stable)"
+        trigger_brief = False
+
+        if context_file.exists():
+            current_text = context_file.read_text(
+                encoding="utf-8", errors="ignore")
+            if force_refresh_brief or (UNINITIALIZED_MARKER in current_text):
+                trigger_brief = True
+                brief_status = "In progress (background, about 20 seconds)"
+        elif saved > 0:
+            trigger_brief = True
+            brief_status = "In progress (background, about 20 seconds)"
+
+        if trigger_brief:
+            context_dir.mkdir(parents=True, exist_ok=True)
+            progress.brief_status = "In progress (background, about 20 seconds)"
+            log.info(
+                "_background_scan | triggering brief synthesis for %s", display_name)
+            asyncio.create_task(_background_brief_synthesis(
+                workspace_id, display_name, context_file, progress))
+
+        progress.completed = True
+        progress.brief_status = brief_status
+
+        log.info(
+            "_background_scan | complete for %s — saved=%d skipped=%d errors=%d",
+            display_name, saved, progress.skipped, errors,
+        )
+
+    except Exception as exc:
+        log.error("_background_scan | fatal error for %s: %s", display_name, exc)
+        progress.completed = True
+        progress.brief_status = "failed"
+        progress.errors += 1
+
+
+# ---------------------------------------------------------------------------
 # Tool: scan_workspace
 # ---------------------------------------------------------------------------
 
@@ -1660,14 +1999,15 @@ async def scan_workspace(
     force_refresh_brief: bool = False,
 ) -> str:
     """
-    Walks the entire workspace directory using tree-sitter for code files,
-    respects .memignore, and saves every readable text file to this
-    workspace's persistent vector memory.
+    Starts a background scan of the workspace. Returns immediately;
+    the scan continues in the background. Use scan_status() to track
+    progress and confirm completion.
 
     Idempotent and Self-Cleaning:
     - Overwrites existing files with deterministic IDs.
     - Automatically purges memories from this category that are no longer
       present or are now ignored.
+    - Re-scanning cancels any in-progress scan for this workspace.
 
     Args:
         workspace:  Workspace identifier (UUID, short UUID, or display name).
@@ -1686,209 +2026,47 @@ async def scan_workspace(
         workspace_path, len(patterns),
     )
 
-    # Track existing IDs in this category to perform a sync/purge at the end
     collection = _get_collection(workspace_id)
     with _db_lock:
         existing = collection.get(where={"category": category})
         old_ids = set(existing.get("ids", []))
 
-    scanned_ids = set()
-    saved = 0
-    skipped = 0
-    errors = 0
+    # Cancel any in-progress scan for this workspace
+    old_task = _scan_tasks.pop(workspace_id, None)
+    if old_task and not old_task.done():
+        old_task.cancel()
+        log.info("scan_workspace | cancelled previous scan for %s", display_name)
 
-    for file_path in sorted(workspace_root.rglob("*")):
-        # Skip directories themselves
-        if not file_path.is_file():
-            continue
+    total_files = sum(1 for _ in workspace_root.rglob("*") if _.is_file())
 
-        # Skip files that match .memignore
-        if _is_ignored(file_path, workspace_root, patterns):
-            skipped += 1
-            log.debug("scan_workspace | ignored: %s", file_path)
-            continue
-
-        # Skip non-text extensions
-        if file_path.suffix.lower() not in _TEXT_EXTENSIONS:
-            skipped += 1
-            continue
-
-        # Skip files that are too large
-        if file_path.stat().st_size > _MAX_FILE_BYTES:
-            skipped += 1
-            log.info("scan_workspace | too large, skipping: %s", file_path)
-            continue
-
-        try:
-            content = file_path.read_text(encoding="utf-8", errors="ignore")
-            if not content.strip():
-                skipped += 1
-                continue
-
-            rel_path = file_path.relative_to(workspace_root).as_posix()
-
-            # Capture filesystem modification time for enriched metadata
-            last_modified_ts = datetime.fromtimestamp(
-                file_path.stat().st_mtime, timezone.utc
-            ).isoformat()
-
-            ext = file_path.suffix.lower()
-
-            # -------------------------------------------------------------------
-            # tree-sitter extraction for supported code files
-            # Each function/class becomes a separate ChromaDB document.
-            # No API calls, no token costs, no empty responses.
-            # -------------------------------------------------------------------
-            if ext in get_supported_extensions():
-                try:
-                    entities = extract_entities(content, rel_path)
-                except Exception as exc:
-                    log.warning(
-                        "scan_workspace | tree-sitter parse failed for %s: %s",
-                        rel_path, exc,
-                    )
-                    # Fall through to chunk-based save below
-                    entities = []
-
-                if entities:
-                    for entity in entities:
-                        doc_id = hashlib.md5(
-                            f"{workspace_id}:{rel_path}:{entity.name}:{entity.lineno}"
-                            .encode()
-                        ).hexdigest()
-                        meta = {
-                            "category": category,
-                            "workspace": workspace_id,
-                            "source_file": rel_path,
-                            "source_type": "",
-                            "language": entity.language,
-                            "entity_type": entity.entity_type,
-                            "name": entity.name,
-                            "lineno": entity.lineno,
-                            "end_lineno": entity.end_lineno,
-                            "parent_class": entity.parent_class or "",
-                            "return_type": entity.return_type or "",
-                            "has_docstring": entity.docstring is not None,
-                            "params_count": len(entity.params),
-                            "last_modified": last_modified_ts,
-                        }
-                        if entity.decorators:
-                            meta["decorators"] = entity.decorators
-
-                        with _db_lock:
-                            collection.upsert(
-                                documents=[entity.document_text],
-                                metadatas=[meta],
-                                ids=[doc_id],
-                            )
-                        scanned_ids.add(doc_id)
-                    saved += 1
-                    log.info(
-                        "scan_workspace | indexed %d entities from %s [%s]",
-                        len(
-                            entities), rel_path, entities[0].language if entities else "unknown",
-                    )
-                    continue  # skip the chunk-based path below
-
-            # Skip bare .py files with no functions/classes when configured.
-            # Avoids DeepSeek calls on files like admin.py, urls.py, settings.py.
-            if SKIP_BARE_PY_FILES and ext == ".py":
-                skipped += 1
-                log.info(
-                    "scan_workspace | skipped bare .py (no entities): %s", rel_path)
-                continue
-
-            # -------------------------------------------------------------------
-            # Non-code files: keep existing chunking + LLM summarization
-            # -------------------------------------------------------------------
-            chunks = _chunk_file_content(content)
-            total_chunks = len(chunks)
-
-            for chunk_idx, chunk_text in enumerate(chunks):
-                if total_chunks > 1:
-                    chunk_header = (
-                        f"### {rel_path} "
-                        f"[chunk {chunk_idx + 1}/{total_chunks}]\n"
-                    )
-                else:
-                    chunk_header = f"### {rel_path}\n"
-
-                labelled_chunk = f"{chunk_header}{chunk_text}"
-
-                if total_chunks > 1:
-                    chunk_source_id = f"{rel_path}::chunk_{chunk_idx + 1}"
-                else:
-                    chunk_source_id = rel_path
-
-                await save_to_memory(
-                    content=labelled_chunk,
-                    workspace=workspace_id,
-                    category=category,
-                    source_id=chunk_source_id,
-                    last_modified=last_modified_ts,
-                )
-
-                doc_id = hashlib.md5(
-                    f"{workspace_id}:{chunk_source_id}".encode()
-                ).hexdigest()
-                scanned_ids.add(doc_id)
-
-                log.info(
-                    "scan_workspace | saved: %s [chunk %d/%d]",
-                    rel_path, chunk_idx + 1, total_chunks,
-                )
-
-            saved += 1  # increment once per file, not per chunk
-
-        except Exception as exc:
-            errors += 1
-            log.error("scan_workspace | error reading %s: %s", file_path, exc)
-
-    # Purge stale memories: anything that was in the DB but NOT found in this scan
-    stale_ids = list(old_ids - scanned_ids)
-    if stale_ids:
-        with _db_lock:
-            collection.delete(ids=stale_ids)
-        log.info("scan_workspace | purged %d stale memories for %s",
-                 len(stale_ids), workspace_id)
-
-    # Brief Synthesis Logic (fire-and-forget to avoid MCP timeouts)
-    context_dir = Path(DB_PATH) / "contexts"
-    context_file = context_dir / f"{workspace_id}.md"
-
-    brief_status = "No (Cache Stable)"
-    trigger_brief = False
-
-    if context_file.exists():
-        current_text = context_file.read_text(
-            encoding="utf-8", errors="ignore")
-        if force_refresh_brief or (UNINITIALIZED_MARKER in current_text):
-            trigger_brief = True
-            brief_status = "In progress (background, about 20 seconds)"
-    elif saved > 0:
-        trigger_brief = True
-        brief_status = "In progress (background, about 20 seconds)"
-
-    if trigger_brief:
-        context_dir.mkdir(parents=True, exist_ok=True)
-        log.info(
-            "scan_workspace | triggering background brief synthesis for %s", display_name)
-        asyncio.create_task(_background_brief_synthesis(
-            workspace_id, display_name, context_file))
-
-    stats = (
-        f"Scan complete for `{display_name}`\n"
-        f"Workspace ID: `{workspace_id[:8]}`\n"
-        f"- Saved/Updated: {saved}\n"
-        f"- Skipped: {skipped}\n"
-        f"- Purged: {len(stale_ids)}\n"
-        f"- Errors: {errors}\n"
-        f"- Brief: {brief_status}\n\n"
-        f"Query this workspace:\n"
-        f"  query_memory(workspace=\"{workspace_id[:8]}\", user_query=\"...\")\n"
-        f"  get_brief(workspace=\"{workspace_id[:8]}\")"
+    progress = ScanProgress(
+        workspace_id=workspace_id,
+        display_name=display_name,
+        total_files=total_files,
     )
-    return stats
+    _scans[workspace_id] = progress
+
+    task = asyncio.create_task(_background_scan(
+        workspace_id=workspace_id,
+        display_name=display_name,
+        workspace_root=workspace_root,
+        patterns=patterns,
+        collection=collection,
+        old_ids=old_ids,
+        category=category,
+        progress=progress,
+        force_refresh_brief=force_refresh_brief,
+    ))
+    _scan_tasks[workspace_id] = task
+
+    return (
+        f"Background scan started for `{display_name}`\n"
+        f"Workspace ID: `{workspace_id[:8]}`\n"
+        f"- Files queued: {total_files}\n"
+        f"- To check progress, copy/paste this into your chat:\n"
+        f"  scan_status(workspace=\"{workspace_id[:8]}\")\n"
+        f"- When scan finishes, the brief auto-generates — then query_memory as usual."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2326,6 +2504,63 @@ async def merge_workspaces(source_workspace_id: str, target_workspace_id: str) -
     except Exception as exc:
         log.error("merge_workspaces failed: %s", exc)
         return f"ERROR: Could not merge workspaces — {exc}"
+
+
+# ---------------------------------------------------------------------------
+# Tool: scan_status
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def scan_status(workspace: str) -> str:
+    """
+    Returns progress of a running or recently completed background scan.
+    Use after scan_workspace times out to check if indexing is done.
+    Reports scan progress AND brief synthesis status independently.
+
+    Args:
+        workspace: Workspace identifier (UUID, short UUID, or display name).
+    """
+    try:
+        workspace_id, display_name, _ = _resolve_workspace(workspace)
+        progress = _scans.get(workspace_id)
+        if not progress:
+            return (
+                f"No active or recent scan for `{display_name}`.\n"
+                f"To start one, ask your agent: scan_workspace(workspace=\"{display_name}\")"
+            )
+
+        elapsed = datetime.now(timezone.utc).timestamp() - progress.started_at
+
+        if progress.completed:
+            parts = [
+                f"Scan complete for `{display_name}`",
+                f"- Files: {progress.scanned} scanned, {progress.skipped} skipped, {progress.errors} errors",
+                f"- Entities: {progress.entities} indexed",
+                f"- Brief: {progress.brief_status}",
+                f"- Duration: {elapsed:.0f}s",
+            ]
+            return "\n".join(parts)
+
+        # Estimate remaining time
+        if progress.scanned > 0:
+            rate = progress.scanned / elapsed if elapsed > 0 else 0
+            remaining = (progress.total_files - progress.scanned) / rate if rate > 0 else 0
+            eta = f"~{remaining:.0f}s remaining"
+        else:
+            eta = "estimating..."
+
+        return (
+            f"Scan in progress for `{display_name}`\n"
+            f"- Files: {progress.scanned}/{progress.total_files} | "
+            f"{progress.errors} errors\n"
+            f"- Entities: {progress.entities} indexed\n"
+            f"- Brief: {progress.brief_status}\n"
+            f"- Elapsed: {elapsed:.0f}s | {eta}"
+        )
+
+    except Exception as exc:
+        log.error("scan_status failed: %s", exc)
+        return f"ERROR: Could not retrieve scan status — {exc}"
 
 
 # ---------------------------------------------------------------------------
