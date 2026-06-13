@@ -2,239 +2,85 @@
   <img width="908" height="510" src="zm_logo_70.png">
 </p>
 
-A standalone local-only Python MCP server that gives any IDE persistent, workspace-isolated memory. Combines ChromaDB (local vector store), Ollama (free local summarisation), and DeepSeek (cloud synthesis) with automatic cost-aware routing.
+<p align="center">
+  <strong>Never lose your AI context again.</strong><br/>
+  Persistent, workspace-isolated memory for every IDE — local-first, cost-aware, instant.
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/ChromaDB-Local_Vector_Store-FF6B35?style=for-the-badge" alt="ChromaDB">
+  <img src="https://img.shields.io/badge/Ollama-Free_Local_LLM-000000?style=for-the-badge" alt="Ollama">
+  <img src="https://img.shields.io/badge/DeepSeek-Cloud_Synthesis-1A73E8?style=for-the-badge" alt="DeepSeek">
+  <img src="https://img.shields.io/badge/MCP-Model_Context_Protocol-6C3483?style=for-the-badge" alt="MCP">
+  <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="MIT License">
+</p>
 
 ---
 
-## Table of Contents
+## The Problem
 
-1. [What Is Zerikai Memory?](#what-is-zerikai-memory)
-2. [How It Works](#how-it-works)
-3. [Cost Savings Explained](#cost-savings-explained)
-4. [Project Structure](#project-structure)
-5. [Prerequisites](#prerequisites)
-6. **[Installation](#installation)** *
-7. [IDE Registration](#ide-registration)
-    - [IDE Agent Rules](#ide-agent-rules)
-8. [Workspace Setup (per project)](#workspace-setup-per-project)
-9. [Embedding-Docstring Skill](#embedding-docstring-skill)
-10. [Day-to-Day Usage](#day-to-day-usage)
-11. [Auto-Routing Reference](#auto-routing-reference)
-12. [Project Brief Structure](#project-brief-structure)
-13. [MCP Tools Reference](#mcp-tools-reference)
-14. [Monitoring & Logs](#monitoring--logs)
-15. [Auxiliary Scripts](#auxiliary-scripts)
-16. [DeepSeek KV Cache Optimisation](#deepseek-kv-cache-optimisation)
-17. [Security & Data Privacy](#security--data-privacy)
-18. [Troubleshooting](#troubleshooting)
-19. [Notice](#notice)
+Every new chat session starts completely cold. When you switch contexts or open a new window:
 
----
+* Your AI assistant forgets every architectural decision, convention, and stack choice made over hours
+* You waste critical tokens and 10–15 minutes re-explaining the codebase setup in every single chat
+* Large raw file dumps inflate your token costs and shrink your available context window instantly
+* Switching IDEs (e.g., VS Code to Cursor) forces you to restart your conversation history from scratch
 
-## What Is Zerikai Memory?
+## How Zerikai Memory Solves It
 
-Zerikai Memory is a **local MCP (Model Context Protocol) server** that provides persistent, workspace-isolated memory to your IDE's AI assistant. It solves a core problem with AI-assisted development: every new chat session starts cold, forcing you to re-explain your project context, decisions, and conventions, wasting tokens and time.
-
-By storing compressed, semantically searchable summaries of your codebase and architectural decisions, Zerikai Memory enables your IDE's AI to:
-
-- **Recall decisions** made in previous sessions instantly.
-- **Understand your codebase** without raw file dumps into the chat window.
-- **Share context across IDEs**, work in VS Code, then switch to Cursor, with no re-explanation.
-- **Dramatically reduce API costs** through smart local/cloud routing and DeepSeek KV caching.
-
-The server runs **entirely on your local machine**. Each IDE connects via STDIO to its own server process, with direct filesystem access for workspace scanning.
-
----
-
-Most recent updates are listed in the changelog below. Click to expand:
-
-<details>
-<summary>New Updates 2026-06-10</summary>
-
-- **High-Granularity Brief Synthesis:** Optimized `_build_section` in `main.py`: fetches a wide re-ranking pool (75) with keyword matching across entity name, docstring, and `source_file`; supports per-section `full_context` and adjustable `fetch_cap` trimming (default 20, 25 for Architecture). Lets Architecture, Data Flow, and Convention sections extract deep details while keeping LLM calls cost-controlled.
-- **Roadmap Extraction Fix:** Patched a critical bug in `_truncate_for_brief` that caused roadmap retrieval from `todo.md` to break at the first blank line. The project brief now correctly captures the full multi-point roadmap.
-- **Enhanced Retrieval Accuracy:** Refined the iterative synthesis engine to use section-specific semantic queries, ensuring the final brief prominently features core logic like tree-sitter parsing and lexical re-ranking.
-- **Async background scanning:** `scan_workspace` returns immediately and runs in background. No more MCP timeouts on large codebases. Four concurrent workers parse files via tree-sitter; entities batch-upserted to ChromaDB (300 per call). LLM calls gated by semaphore(2).
-- **`scan_status` tool:** Tracks scan progress and brief synthesis independently — file count, entities, errors, elapsed, brief status (pending/running/complete/failed). Agents poll this after `scan_workspace`.
-- **Batch writes:** Per-file batch `upsert()` replaces per-entity calls. One lock acquisition per file instead of per entity.
-- **`SKIP_BARE_PY_FILES` renamed to `SKIP_BARE_FILES`:** Boolean toggle → configurable extension list (`['.py', '.html', '.md', '.css']`). Bare files with zero tree-sitter entities no longer fall through to LLM summarisation.
-- **Brief status auto-update:** `scan_status` now reflects brief completion ("Complete"/"Failed") in real time.
-</details>
-
-<details>
-<summary>Updates 2026-05-27</summary>
-
-- **IDE Agent Rules:** New [`agent_rules/ide_agent_rules.md`](agent_rules/ide_agent_rules.md) with two behavioral rules — *Universal-Brain First* (query memory before raw file searches) and *Source Discipline* (always surface `file:line` citations with confidence scores). Includes per-IDE setup instructions for VS Code Copilot, pi.dev, Google Antigravity, and Claude Desktop. Applied rules prevent agents from skipping memory or fabricating answers.
-- **README:** New `### IDE Agent Rules` subsection under IDE Registration summarising the rules and linking to the file. `agent_rules/` added to the project structure tree.
-
-</details>
-
-<details>
-
-<summary>Updates 2026-05-17</summary>
-
-- **Inline source citations:** Replaced the `## Sources` Markdown table with plain-text `#file:line (distance)` citations. Renders in every IDE without broken tables; clickable in VS Code Copilot. Tested against Copilot, Claude Desktop, Antigravity, and pi with documented agent behavior differences.
-
-</details>
-
-<details>
-<summary>Updates 2026-05-13</summary>
-
-- **Lexical re-ranking in `query_memory`:** New hybrid search step: after semantic retrieval, results are reordered by keyword overlap in entity names and docstrings. Solves false positives where functions with shared vocabulary (e.g. "tree-sitter", "extract") crowd out the correct match. `ENABLE_LEXICAL_RERANK=true` activates it; `LEXICAL_RERANK_WEIGHT` (default 0.05) controls boost per keyword hit. Pure reorder, nothing dropped. Default off.
-- **Agent-aware tool descriptions:** All 15 MCP tool docstrings reviewed and tuned for AI agent consumption (Copilot, Claude Desktop, Antigravity). Agents now receive priority directives, anti-pattern hints, and "when not to use" guidance directly in the tool schema, reducing trial-and-error probing.
-- **`save_to_memory` docstring rewritten:** Leads with use-case semantics (*"Manually save an architectural decision, fact, or technical note"*) instead of implementation details. Adds explicit routing hint: *"it's not for code files, `scan_workspace` handles those."*
-- **Priority directives now explicit:** `get_brief` says *"Use this FIRST on any new workspace."* `query_memory` says *"Use this BEFORE reasoning from priors."* `list_memory` warns *"not to answer code questions, use `query_memory`."* `resolve_workspace` identifies itself as *"a helper tool for agents that don't have filesystem context."*
-- **Irreversible operations flagged:** `merge_workspaces` and `purge_usage_data` both carry a *"Cannot be undone"* warning visible to the agent before execution.
-</details>
-
-<details>
-<summary>Updates 2026-05-12</summary>
-
-- **Parallel brief synthesis:** All 9 brief sections now fire simultaneously via `asyncio.gather`. Brief generation dropped *from ~90 seconds to ~20-30 seconds*.
-- Skip bare `.py` files: New `SKIP_BARE_PY_FILES` toggle in `.env`. Skips `.py` files with no functions or classes (`admin.py`, `urls.py`, `settings.py`) to avoid DeepSeek calls on boilerplate. Default off.
-- **HTML comment indexing:** _extract_html now captures `<!-- -->` comments as docstrings for the elements that follow. Comments are searchable and appear in inline source citations.
-- **Embedding-docstring skill:** Updated to cover HTML comments in addition to *Python*, *JavaScript*, and *TypeScript* docstrings.
-- **Brief timing corrected:** Status messages updated from "about 90 seconds" to "about 20 seconds."
-- **Primary Conventions prompt tightened:** Briefs no longer include filler sections like Naming Conventions or Testing infrastructure.
-- **use_cloud default:** `synthesize_deep_brief` now defaults to cloud mode.
-</details>
-
-<details>
-<summary>Updates 2026-05-11</summary>
-
-- **Inline source citations**: Every `query_memory` response prepends inline `#file:line (distance)` citations — plain text, cross-agent compatible, clickable in VS Code Copilot.
-- **Full docstrings embedded**: `_clean_docstring` no longer truncates to first sentence; the LLM sees complete function descriptions for richer answers.
-- **`show_sources` toggle**: Callers can enable or disable inline source citations per query; defaults to on.
-- **Fire-and-forget brief synthesis**: `scan_workspace` returns immediately; brief generates in background, no more MCP timeouts.
-- **Tighter distance threshold**: Default `QUERY_DISTANCE_THRESHOLD=1.0` in `.env`, eliminating false positives.
-- **Embedding-docstring skill**: A companion skill (`embedding-docstring/SKILL.md`) that audits docstrings for embedding quality: technology naming, routing documentation, guarantees, and size limits.
-</details>
-
----
-
-## How It Works
+Zerikai Memory runs as a **local STDIO MCP server** between your IDE and your LLM. It parses your codebase using tree-sitter, indexes code entities into a local ChromaDB vector store, and injects highly relevant context snippets dynamically through natural language.
 
 ```
-Your IDE  ──►  MCP Server (main.py)  ──►  ChromaDB (.brain/vector_db/)
-                     │                         ↑ semantic retrieval
-                     ├── Ollama (local)    ─── Used in Hybrid & Local modes
-                     └── DeepSeek (cloud)  ─── Used in Hybrid & Cloud modes
-```
-
-When you ask your AI assistant a question:
-
-1. The MCP server receives the query.
-2. It performs a **vector search** against ChromaDB to retrieve the most relevant entities (function signatures, docstrings, file summaries) from your codebase, with an optional lexical re-rank if `ENABLE_LEXICAL_RERANK=true`.
-3. The auto-router decides whether to send the query to **Ollama** (local, free) or **DeepSeek** (cloud, billed).
-4. The synthesised answer is returned to your IDE ; enriched with workspace context, without bloating your chat window.
-
-You never call MCP tools directly. You speak to your AI assistant in natural language and it calls the tools on your behalf.
-
-### Lexical Re-ranking
-
-When `ENABLE_LEXICAL_RERANK=true` in `.env`, a lightweight hybrid step runs between semantic retrieval and LLM synthesis. Pure vector search can miss exact function or class names that share vocabulary with unrelated code. The reranker boosts results where query keywords appear in entity names or docstrings, without dropping anything.
-
-```
-Query → embed → ChromaDB top-N → lexical re-rank → LLM synthesis
-                                      ↑
-                           Weighted boost on keyword hits in
-                           entity name + docstring text.
-                           Nothing is dropped — pure reorder.
-```
-
-1. **Semantic retrieval** — ChromaDB returns the top-N results by L2 distance.
-2. **Distance threshold** — Results above `QUERY_DISTANCE_THRESHOLD` are dropped.
-3. **Lexical re-rank** — Survivors are re-scored: `(1/dist) + (keyword_hits ×
-   LEXICAL_RERANK_WEIGHT)`. A function named `extract_entities` with a matching
-   docstring outranks a generic file summary that happens to be semantically close.
-4. **LLM synthesis** — The reordered context is passed to DeepSeek or Ollama for
-   the final answer.
-
-**Brief generation** uses the same scoring formula but with a wider ChromaDB pool
-(75), additional `source_file` keyword matching, and per-section `fetch_cap`
-trimming — all configured inside `_build_section` in `main.py`.
-
-### Workspace Identity
-
-You do not specify your project name or path in chat. Your IDE automatically attaches metadata about your currently active workspace to every message. The server maintains a **Workspace Registry** (SQLite) that maps each workspace folder to a persistent UUID and human-friendly display name.
-
-The AI assistant can resolve any workspace identifier: UUID, short-UUID, or display name, so you never pass raw file paths for routine queries.
-
----
-
-## Cost Savings Explained
-
-DeepSeek is invoked in three places: query synthesis (when auto-routed for long or architectural queries), brief synthesis (9 section calls totalling ~ \$0.003 per full regeneration), and file scanning when in cloud mode (~ \$0.000167 per file). In hybrid mode, routine queries and file scans run on Ollama at \$0. The Project Brief is a fixed prefix across queries, so DeepSeek caches it at \$0.0028/M tokens (hit) vs \$0.14/M (miss), 50x cheaper after the first query. Code files are parsed locally by tree-sitter at zero API cost regardless of mode. Files with zero tree-sitter entities can still trigger LLM calls; set `SKIP_BARE_FILES` in `.env` to prevent this. All IDEs share the same .brain/ directory, so context saved in one is instantly available in another with no re-explanation cost. Every query_memory response includes inline #file:line citations with entity name and L2 distance. This metadata is already stored during scanning at no extra API cost.
-
----
-
-## Project Structure
-
-```
-zerikai_memory/
-├── .brain/                       # Created on first run: do NOT commit
-│   ├── server.log                # Rotating log file (5 MB cap, 2 backups)
-│   ├── zerikai.db                # SQLite: Workspace Registry & token tracking
-│   ├── vector_db/                # ChromaDB: one sub-collection per workspace
-│   └── contexts/                 # Per-workspace project briefs (.md files)
-├── .env                          # API keys: never commit
-├── .memignore                    # Files/dirs excluded from memory indexing
-├── agent_rules/                  # IDE agent behavior rules (universal-brain usage)
-├── code_indexer.py               # Deterministic tree-sitter extraction logic
-├── config.py                     # Configuration & routing thresholds
-├── drop_memory.py                # Cleanup utility (registry + vectors + files)
-├── main.py                       # MCP server entry point
-├── requirements.txt
-└── skill/                        # Companion skills (embedding-docstring, etc.)
+Your Codebase  →  tree-sitter (local parse)  →  ChromaDB (.brain/)
+                                                      │
+Your IDE       →  MCP Server (:stdio)        →        ▼
+                                             Ollama / DeepSeek
+                    │                      (auto-routed synthesis)
+          ┌─────────┴──────────────┐
+          │   4-Stage Pipeline     │
+          │   L1  Vector Search    │  ChromaDB L2 distance matching
+          │   L2  Lexical Re-rank  │  Keyword overlap boost on names
+          │   L3  Auto-Routing     │  Ollama (free) vs. DeepSeek Cloud
+          │   L4  LLM Synthesis    │  Answer + inline #file:line citations
+          └────────────────────────┘
 ```
 
 ---
 
-## Prerequisites
+## Architecture
 
-| Dependency | Purpose | Link |
-|---|---|---|
-| Python 3.11+ | Runtime | [python.org](https://python.org) |
-| Ollama | Free local summarisation (hybrid/local modes) | [ollama.com](https://ollama.com) |
-| DeepSeek API key | Cloud synthesis (hybrid/cloud modes) | [platform.deepseek.com](https://platform.deepseek.com) |
+### Cost Model — The Context Tax Mitigation
+
+| What gets taxed | Without Zerikai | With Zerikai |
+| --- | --- | --- |
+| 🔴 **Monthly quota** | Re-explaining stack, decisions, and conventions every session | Indexed once. Retrieved as compact snippets per query. |
+| 🟡 **Context window** | Raw file dumps shrink the window available for code generation | 1,000–1,200 token brief prefix*. Window stays wide open.  |
+| ⚪ **IDE switching** | Full re-explanation required in every new tool | Shared zerikai_memory workspace `.brain/` directory.  |
+
+> **Tip:** The project brief acts as a stable prefix. After your first query, *DeepSeek caches it, making subsequent repeated queries **up to 50× cheaper**.
 
 ---
 
-## Installation
+## Quick Start
 
-### Step 1: Clone and create the virtual environment
+### 1. Install
 
 ```bash
 git clone https://github.com/your-username/zerikai_memory.git
-cd zerikai_memory
+cd zeriakai_memory
 
-# Python 3.13+
-python -3.13 -m venv venv
-
-# Windows
-.\venv\Scripts\activate
-
-# macOS / Linux
-source venv/bin/activate
+# Create and activate a virtual environment (Python 3.11+)
+python -m venv venv
+source venv/bin/activate  # Windows: .\venv\Scripts\activate
 
 pip install -r requirements.txt
+
 ```
 
-### Step 2: Configure `.env`
+### 2. Configure Environment
 
-> **Upgrading from an older version?** If you used `SKIP_BARE_PY_FILES=true`, replace it with `SKIP_BARE_FILES=['.py', '.html', '.md', '.css']`. The old boolean toggle is no longer read.
-
-Configure via `MEMORY_MODE` in your `.env` file.
-
-| Mode | LLM Strategy | Best For |
-|---|---|---|
-| `cloud` | DeepSeek for everything | **Recommended. Cheaper, no Ollama needed, best brief quality.** |
-| `hybrid` | Ollama (scans/routine) + DeepSeek (architecture/briefs) | Privacy-sensitive users who want free local lookups |
-| `local` | Ollama for everything | 100% privacy & $0 cost, lower quality |
-
-**Recommendation:** Start with `cloud`. You only need a DeepSeek API key -- no Ollama installation, no GPU requirements, no local model management. DeepSeek v4-flash is cheap (\$0.14/M input tokens) and brief synthesis runs at ~\$0.003 per full regeneration.
-
-**Get a DeepSeek API key at [platform.deepseek.com](https://platform.deepseek.com), then add it to `.env`:**
+Remove the `.example` from the `.env.example` file in the root directory and rename it to `.env`:
 
 <details>
 
@@ -288,117 +134,36 @@ LEXICAL_RERANK_WEIGHT=0.05
 
 </details>
 
-### Step 3: Pull a local Ollama model (hybrid/local mode only)
+### 3. IDE Rule Enforcement
 
-**Note:** `OLLAMA_HOST` is optional. If your system has `OLLAMA_HOST=0.0.0.0` set (common on server installs), the server corrects it to `http://127.0.0.1:11434` for client connections.
+To stop your AI agent from ignoring the memory protocol, copy these directives into your IDE's agent rules profile (e.g., `.cursorrules` or system prompt guidelines):
 
-Download and install [Ollama](https://ollama.com) for your OS. Then pull a model:
+**IDE Rules in:** [agent_rules/ide_agent_rules.md](agent_rules/ide_agent_rules.md)
 
-> Only required for `MEMORY_MODE=hybrid` or `MEMORY_MODE=local`. Not needed for cloud mode.
+* **Universal-Brain First:** The agent *must* query `universal-brain` before attempting raw file searches.
+* **Source Discipline:** Every answer *must* surface actual `file.py:line` citations with zero fabrication.
 
-### Step 4: Verify the installation
-
-Open a terminal in your project root (virtual environment activated) and run:
-
-```bash
-python -c "from main import scan_workspace, query_memory; print('OK')"
-```
-
-You should see the server startup banner followed by `OK`.
-
----
-
-## IDE Registration
-
-The server starts **once** when the IDE loads and stays running. Tool calls are messages to that process, there is no restart per call.
-
-### VS Code (Copilot / Cline)
+### 4. Direct System Configurations
 
 1. Press `Ctrl+Shift+P` → **MCP: Add Local Server**
 2. Choose **STDIO**
-3. Set command to: `C:\\path\\to\\zerikai_memory\\venv\\Scripts\\python.exe C:\\path\\to\\zerikai_memory\\main.py`
+3. Set command: `C:\path\to\zerikai_memory\venv\Scripts\python.exe C:\path\to\zerikai_memory\main.py`
 
-> Replace `C:\\path\\to\\zerikai_memory` with the actual absolute path. Double backslashes are required for valid JSON on Windows.
-
-**On macOS/Linux, use forward slashes:** `/path/to/zerikai_memory/venv/bin/python`
-
-**To see other registrations click on the collapsed section below:**
-
-<details>
-
-<summary>Google Antigravity</summary>
-
-Edit `mcp_config.json` directly:
-
-```json
-"universal-brain": {
-  "command": "C:\\path\\to\\zerikai_memory\\venv\\Scripts\\python.exe",
-  "args": [
-    "C:\\path\\to\\zerikai_memory\\main.py"
-  ],
-  "disabled": false
-}
-```
-
-</details>
-
-<details>
-
-<summary>Cursor</summary>
-
-Add to `.cursor/mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "universal-brain": {
-      "command": "/path/to/zerikai_memory/venv/bin/python",
-      "args": ["/path/to/zerikai_memory/main.py"]
-    }
-  }
-}
-```
-
-</details>
-
-<details>
-
-<summary>Claude Desktop</summary>
-
-**Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
-**macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+Add to your `claude_desktop_config.json` profile:
 
 ```json
 {
   "mcpServers": {
     "universal-brain": {
       "command": "C:\\path\\to\\zerikai_memory\\venv\\Scripts\\python.exe",
-      "args": [
-        "C:\\path\\to\\zerikai_memory\\main.py"
-      ]
+      "args": ["C:\\path\\to\\zerikai_memory\\main.py"]
     }
   }
 }
+
 ```
 
-</details>
-
-### IDE Agent Rules
-
-After registering the MCP server, configure your IDE's agent instructions so it uses `universal-brain` correctly. The full guide lives at [`agent_rules/ide_agent_rules.md`](agent_rules/ide_agent_rules.md) with setup steps for VS Code Copilot, pi.dev, Google Antigravity, and Claude Desktop.
-
-**What the rules enforce:**
-
-- **Universal-Brain First** — Before any codebase exploration, the agent queries `universal-brain` via `query_memory`. Raw file searches are only used when memory has no relevant context, and the agent must state that it escalated.
-- **Source Discipline** — Every answer surfaces the full source citation (`file.py:line`) and confidence score from `universal-brain`. If memory has no answer, the agent says so instead of fabricating.
-
-> Apply these rules **after** registering the MCP server — they configure how the agent behaves once connected, not how it connects.
-
----
-
-## Workspace Setup (per project)
-
-### 1. Setup the `.memignore` file
+### 5. Setup the `.memignore` file
 
 Works like `.gitignore`: one pattern per line. `scan_workspace` reads this file and skips matching paths.
 
@@ -431,173 +196,40 @@ build/
 
 </details>
 
-### 2. Register a new project
+### 6. Embedding-Docstring Skill
 
-In a new chat session in your IDE, call the universal-brain MCP and ask:
+Before running your first index scan, optimize your codebase's docstrings for vector search. Ask your AI assistant:
 
-```
-"Set up memory for this project"
-```
+> *"Audit and optimize docstrings across this project using the embedding-docstring skill, respecting .memignore."*
 
-The assistant calls `init_workspace`, which registers the folder and creates a pending brief file at:
+| Requirement | Why It Matters | Target Impact |
+| --- | --- | --- |
+| **Explicit Tech Names** | Use `"Uses Redis"` instead of `"key-value store"` | Embeddings match precise tokens, not abstract concepts. |
+| **Routing / Branches** | Document specific route paths and logical pivot options | Ensures structural code matches are surfaceable. |
+| **Guarantees & Effects** | Explicitly state code idempotency, atomicity, or mutation side-effects | Prevents agent generation from breaking runtime boundaries. |
 
-```
-.brain/contexts/<workspace_id>.md
-```
+### 7. Chat with Memory
 
-> `init_workspace` is idempotent, running it multiple times is safe and returns the existing registration.
+Simply instruct your IDE's active AI agent using natural language commands:
 
-### 3. Scan and index the workspace
+prefix queries with **"universal-brain: \<command>"** to ensure they route through the MCP server and leverage your indexed memory:
 
-Tell your assistant:
+* Scan the workspace for the first time: `"Set up memory for this project"`
+* Ask a question: `"What are the main architectural components of this project?"`
 
-```
-"Scan and index the workspace."
-```
+**Frequently used follow-ups:**
 
-The assistant calls `scan_workspace`, which **returns immediately** and runs the scan in background. The assistant then polls `scan_status` until completion.
+* After a code change: `"Rescan the workspace and force a refresh of the project brief."`
+* Save part of a chat: `"Save the following context to memory: [your custom notes or constraints here]"`
+* Ask how much have you used: `"Get me a cost report for my memory usage so far."`
 
-**What happens in background:**
-
-1. Walks the directory (respecting `.memignore`). Supported code files are parsed into deterministic `tree-sitter` entities via 4 concurrent workers. Non-code files get compressed LLM summaries (gated by semaphore).
-2. Entities are batch-upserted to ChromaDB (up to 300 per call) for maximum throughput.
-3. Performs **iterative synthesis**: queries memory for up to 75 relevant `tree-sitter` nodes/summaries per section across 9 project brief sections.
-4. Saves the brief to `.brain/contexts/<workspace_id>.md` and locks it to protect your DeepSeek KV cache prefix.
-
-> **Agent workflow after timeout:** If the MCP client times out, the scan continues in background. The agent calls `scan_status` to check progress and confirm completion.
-
-> **Cache Stability Policy:** Normal daily scans do **not** regenerate the project brief. The brief is only generated on the first scan or when explicitly forced.
-
-### 4. Force a brief refresh (when needed)
-
-If you make a major architectural pivot, tell your assistant:
-
-```
-"Rescan the workspace and force a refresh of the project brief."
-```
-
-The assistant calls `scan_workspace(force_refresh_brief=True)`.
-
----
-
-## Embedding-Docstring Skill
-
-The embedding-docstring skill (`embedding-docstring/SKILL.md`) is a companion skill that helps maintain docstring quality across any codebase. It audits functions, methods, and classes for embedding-optimized docstrings that are rich, dense, and keyword-accurate so semantic search retrieves them correctly.
-
-### What it checks
-
-- **Technology names**: If the code imports `redis`, the docstring should say "Redis", not "key-value store". The embedding matches words, not concepts.
-- **Routing / branches**: "Uses tree-sitter for code files, falls back to LLM summarization": decision logic must be documented.
-- **Guarantees**: Idempotency, atomicity, ordering, or "no guarantees" stated explicitly.
-- **Side effects**: What the function writes, calls, or mutates beyond its return value.
-- **Size limit**: Prose body above `Args:`/`Returns:` capped at 4 lines or 400 characters, whichever is shorter.
-
-### How to use it
-
-In any workspace, tell your assistant:
-
-```
-audit docstrings in api_handler.py using the embedding-docstring skill
-```
-
-or for a single function:
-
-```
-optimize the docstring for authenticate_user for vector search
-```
-
-The skill reads the source, applies the checklist, flags violations with line numbers, and proposes before/after diffs for approval. It works with Python, JavaScript, TypeScript, and any language with docstring conventions.
-
-### Why it exists
-
-Docstrings that are too short, too vague, or missing technology names starve semantic search. The LLM can only synthesize from what's embedded. The skill ensures every docstring carries enough keyword density to be findable.
-
----
-
-## Day-to-Day Usage
-
-### Scan
-
-```
-"Scan the workspace."
-```
-
-`scan_workspace` returns immediately and runs in background. The agent polls `scan_status` to confirm completion.
-
-`scan_workspace` is **idempotent and self-cleaning**:
-
-- Uses deterministic hashing to overwrite existing file records (no duplicates).
-- Automatically **purges stale memories** for files deleted or added to `.memignore` since the last scan.
-- Does **not** regenerate the project brief (unless forced), preserving your KV cache.
-- Re-scanning cancels any in-progress scan for that workspace.
-
-### Common natural-language commands
-
-| You say | What happens |
-|---|---|
-| *"Remember that we're using Redis for session caching"* | `save_to_memory` is called |
-| *"What did we decide about auth?"* | `query_memory` → Ollama (local, instant) |
-| *"Refactor the data layer, what are our constraints?"* | `query_memory` → DeepSeek (auto-escalated) |
-| *"List what's in memory for this project"* | `list_memory` |
-| *"What projects do you know about?"* | `list_workspaces` |
-| *"Show me the project brief."* | `get_brief` → displays `.brain/contexts/<id>.md` |
-
-### Retrieve the project brief
-
-```
-"Show me the project brief."
-```
-
-The assistant calls `get_brief`, which reads the `.md` file from `.brain/contexts/` and displays its content. If no brief exists, it suggests running `init_workspace` and `scan_workspace` first.
-
----
-
-## Auto-Routing Reference
-
-Routing is fully automatic based on query characteristics. You can override it explicitly.
-
-| Condition | Engine | Cost |
-|---|---|---|
-| Short, specific query | Ollama | Free |
-| Query ≥ 40 words | DeepSeek v4-flash | \$0.0028/M cached tokens |
-| Contains architectural keywords (`refactor`, `architect`, `design`, `audit`…) | DeepSeek v4-pro | \$0.003625/M cached tokens (75% off until May 31) |
-| `use_cloud=True` (explicit override) | DeepSeek |: |
-| `use_cloud=False` (explicit override) | Ollama | Free |
-
----
-
-## Project Brief Structure
-
-Each workspace gets an auto-generated project brief optimised for DeepSeek KV caching. The brief is 1,000–1,200 tokens, the sweet spot for cache stability and accuracy.
-
-The brief is synthesised using **DeepSeek v4-flash** (or Ollama in local mode), generating 15 semantic search results per section for accuracy.
-
-### 9-Section Structure
-
-| # | Section | Content |
-|---|---|---|
-| 1 | **Overview** | High-level summary of type, purpose, and domain |
-| 2 | **Technical Stack** | Backend, Database, API integrations, Libraries |
-| 3 | **Core Architecture** | Frontend, Backend, Data/Processing layers |
-| 4 | **Primary Conventions** | Code, docs, error handling, and schema rules |
-| 5 | **Purpose** | Business problem solved and core objectives |
-| 6 | **Key Files & Directories** | Entry points and routers with specific purposes |
-| 7 | **Development & Testing** | Setup, running, testing, and deployment instructions |
-| 8 | **Data Flow & Request Lifecycle** | Request trace from entry point to data layer |
-| 9 | **Future Roadmap** | Planned features, improvements, and TODOs from code |
-
-**Benefits:**
-
-- 1,000–1,200 tokens → optimal cache stability.
-- 10× cost savings via DeepSeek cache hits (identical prefix across queries).
-- Semantic search friendly → accurate context retrieval.
-- Human-readable → can be manually reviewed and edited.
+See below for a full reference of available commands and their descriptions.
 
 ---
 
 ## MCP Tools Reference
 
-You never call these tools directly, your AI assistant calls them based on your natural language instructions. This reference is for understanding what the server can do.
+You never run these commands directly; your active AI agent executes them on your behalf.
 
 ### Workspace Management
 
@@ -632,184 +264,86 @@ You never call these tools directly, your AI assistant calls them based on your 
 
 ---
 
-## Monitoring & Logs
+## Project Brief Matrix
 
-All server activity is written to **`.brain/server.log`** with a 5 MB rotating cap and 2 rolling backups.
+When a workspace is scanned, Zerikai compiles a dense **1,000–1,200 token project brief** across 9 locked components:
 
-### What is logged
-
-| Event | Level |
-|---|---|
-| Server startup (DB path, model, mode) | `INFO` |
-| Memory saved (workspace, category, preview) | `INFO` |
-| Auto-route decision (reason) | `INFO` |
-| DeepSeek cache hit / miss stats | `INFO` |
-| `scan_workspace`: each file saved or skipped | `INFO` / `DEBUG` |
-| Any tool failure | `ERROR` |
-
-### Live tail
-
-```powershell
-# Windows PowerShell
-Get-Content .brain\server.log -Wait -Tail 30
-```
-
-```bash
-# macOS / Linux
-tail -f .brain/server.log
-```
-
-### Filter errors only
-
-```powershell
-# Windows PowerShell
-Select-String -Path .brain\server.log -Pattern "ERROR"
-```
-
-```bash
-# macOS / Linux
-grep "ERROR" .brain/server.log
-```
+| Section | What It Captures |
+| --- | --- |
+| 1. **Overview** | Project domain, primary type, and functional scope. |
+| 2. **Technical Stack** | Backend engines, databases, integrations, and core libraries. |
+| 3. **Core Architecture** | Interactivity between frontend, backend, and processing layers. |
+| 4. **Primary Conventions** | Local code styling, custom error handling, and validation schema rules. |
+| 5. **Purpose** | Business logic problems solved and key underlying objectives. |
+| 6. **Key Files** | Definitive app entry points, central routers, and specific domain tasks. |
+| 7. **Dev & Testing** | Environment installation setups, execution triggers, and testing runs. |
+| 8. **Data Flow** | Complete systemic request lifecycle tracing from gateway to database layer. |
+| 9. **Future Roadmap** | Planned engineering steps and dangling `TODO` items parsed directly from code. |
 
 ---
 
-## Auxiliary Scripts
+## Memory Modes
 
-### `drop_memory.py`: Wipe a workspace
+Adjust your operation profile via the `MEMORY_MODE` environment toggle to balance privacy, speed, and API costs:
 
-Use this when you need to completely reset the AI's memory for a specific project, for example, if you forgot to configure `.memignore` before the first scan and the AI indexed a large `logs/` directory.
+| Mode | Scan Engine | Query Engine | Total Cost | Ideal Use Case |
+| --- | --- | --- | --- | --- |
+| 🟢 `cloud` | DeepSeek | DeepSeek | Low | **Recommended.** Maximum context nuance, no local setup. |
+| 🟡 `hybrid` | Ollama | Ollama + DeepSeek | Lowest | Tight data governance. Free local lookups with cloud escalation. |
+| 🔴 `local` | Ollama | Ollama | **$0.00** | 100% air-gapped offline environment tracking. |
 
-The script deletes:
+---
 
-- The ChromaDB vector collection for the workspace.
-- The associated `.brain/contexts/<workspace_id>.md` brief file.
-- The workspace registry entry in `zerikai.db`.
+## Configuration Reference
 
-**Usage:**
+| Key | Default | Description |
+| --- | --- | --- |
+| `DEEPSEEK_API_KEY` | *Required* | Active API authorization key from platform.deepseek.com. |
+| `MEMORY_MODE` | `cloud` | Sets target engines: choices include `cloud`, `hybrid`, or `local`. |
+| `ENABLE_TOKEN_TRACKING` | `true` | Calculates continuous usage and outputs summaries to SQLite. |
+| `QUERY_DISTANCE_THRESHOLD` | `1.0` | Sets L2 vector distance cutoff limits. Lower inputs restrict matches. |
+| `ENABLE_LEXICAL_RERANK` | `false` | Activates secondary hybrid reordering layer via keyword matching. |
+| `SKIP_BARE_FILES` | `[]` | Extension list to bypass when tree-sitter finds zero valid code entities. |
+
+---
+
+## Auxiliary Scripts & Troubleshooting
+
+### Workspace Reset
+
+If you accidentally execute a workspace crawl before setting up your `.memignore` configurations, run the auxiliary wipe script to delete stale workspace data:
 
 ```bash
 # Windows
 .\venv\Scripts\python.exe drop_memory.py "Workspace Name"
-# or by UUID
-.\venv\Scripts\python.exe drop_memory.py workspace-uuid
 
 # macOS / Linux
 venv/bin/python drop_memory.py "Workspace Name"
+
 ```
 
-Find workspace names and IDs with `list_workspaces` or by listing `.brain/contexts/`.
+### Live Log Diagnostics
 
-After wiping, fix your `.memignore`, then re-run `init_workspace` and `scan_workspace`.
+Monitor server activity, runtime operations, and auto-routing logs inside **`.brain/server.log`**:
 
----
+```bash
+# Live stream logs (macOS/Linux)
+tail -f .brain/server.log
 
-## DeepSeek KV Cache Optimisation
+# Live stream logs (Windows PowerShell)
+Get-Content .brain\server.log -Wait -Tail 30
 
-Caching is **automatic**, no flags required.
-
-The server structures every API call to maximise hit rate:
-
-- **System message** = fixed role instruction + stable project brief. This prefix is identical on every call for the same workspace → cached after the first call of a session.
-- **User message** = retrieved context snippets + query. This changes every call → never cached (by design).
-
-A well-populated 600-token project brief means paying **\$0.0028/M tokens** (cache hit) instead of **\$0.14/M** (cache miss) on your largest token block, a **50× saving** on every query after the first, using v4-flash pricing.
-
-> **Cache Protection:** Do not force-refresh the project brief during normal development. The brief is intentionally locked after the first scan to keep the system message prefix identical and cache hits active.
+```
 
 ---
 
 ## Security & Data Privacy
 
-All memory data and API keys stay on your machine.
-
-### `.gitignore` requirements
-
-```gitignore
-.env       # Contains DEEPSEEK_API_KEY
-.brain/    # Contains local vector DB and project briefs
-```
-
-> **Warning:** Never commit your `.brain/` folder or `.env` file to version control.
-
-### Key security properties
-
-- **Workspace isolation:** Each project gets its own ChromaDB sub-collection, separate SQLite records, and a separate brief file. Queries for one workspace never return data from another.
-- **Deterministic hashing:** File records use deterministic IDs, re-scanning overwrites existing records rather than duplicating them.
-- **Local-first by default:** In `hybrid` and `local` modes, the majority of operations never leave your machine.
-
----
-
-## Troubleshooting
-
-### The server fails to start
-
-**Symptoms:** IDE shows MCP connection error; no startup banner in logs.
-
-**Check:**
-
-1. Virtual environment is activated and `pip install -r requirements.txt` completed without errors.
-2. `.env` exists with a valid `DEEPSEEK_API_KEY` (even in `local` mode, the file must exist).
-3. Python version is 3.11+: `python --version`
-4. Path to `main.py` in IDE config uses absolute paths and correct separators for your OS.
-
----
-
-### Ollama not responding
-
-**Symptoms:** `hybrid` or `local` mode queries fail or time out.
-
-**Check:**
-
-1. Ollama is running: open a browser to `http://127.0.0.1:11434`, you should see a response.
-2. The model is pulled: `ollama list` should show `llama3.2` (or your configured model).
-3. If your system has `OLLAMA_HOST=0.0.0.0` set as an environment variable, the server corrects this automatically. If issues persist, unset it or set it explicitly to `http://127.0.0.1:11434`.
-
----
-
-### Memory is stale or contains irrelevant files
-
-**Symptoms:** The AI recalls information from deleted files or ignored directories.
-
-**Solution:** `scan_workspace` is self-cleaning, run it again and it will automatically purge stale records. If the problem is structural (wrong files indexed from the start), use `drop_memory.py` to wipe and re-index with a corrected `.memignore`.
-
----
-
-### DeepSeek cache hit rate is low
-
-**Symptoms:** `get_cache_stats` shows a high miss rate; costs are higher than expected.
-
-**Causes:**
-
-- The project brief was recently force-refreshed, resetting the cache prefix.
-- `ENABLE_DEEPSEEK_PRO=true` is set: v4-pro and v4-flash have separate caches.
-- The first query of a new session is always a miss (the cache warms on subsequent calls).
-
-**Fix:** Avoid force-refreshing the brief unless you have made a major architectural change. Keep `ENABLE_DEEPSEEK_PRO=false` unless you specifically need pro-level reasoning.
-
----
-
-### Duplicate workspace IDs
-
-**Symptoms:** `list_workspaces` shows the same project registered under multiple UUIDs (common when the project is opened from different paths, e.g., absolute vs. relative).
-
-**Fix:**
-
-```
-"Merge workspaces <source-uuid> into <target-uuid>"
-```
-
-The assistant calls `merge_workspaces`. This is **irreversible**; the source workspace is deleted after the merge.
-
-visit [zerikai for more](http://zerikai.com)
-
----
-
-## Notice
-
->This project is provided "as-is" for personal use/reference. I am not accepting Pull Requests or code contributions at this time. AI-generated PRs will be closed and users may be blocked.
+* All active vector spaces, tracking registries, and context details reside directly on your local machine.
+* Add `.env` and `.brain/` explicitly to your global or project `.gitignore` patterns to prevent API keys and secure indexes from leaking to version control platforms.
 
 ---
 
 ## License
 
-MIT
+MIT License © [Zerikai](http://zerikai.com)
