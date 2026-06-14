@@ -22,7 +22,7 @@
 
 Every new chat session starts completely cold. When you switch contexts or open a new window:
 
-* Your AI assistant forgets every architectural decision, convention, and stack choice made over hours
+* Your AI Agent forgets every architectural decision, convention, and stack choice made over hours
 * You waste critical tokens and 10–15 minutes re-explaining the codebase setup in every single chat
 * Large raw file dumps inflate your token costs and shrink your available context window instantly
 * Switching IDEs (e.g., VS Code to Cursor) forces you to restart your conversation history from scratch
@@ -198,7 +198,10 @@ build/
 
 ### 6. Embedding-Docstring Skill
 
-Before running your first index scan, optimize your codebase's docstrings for vector search. Ask your AI assistant:
+Before running your first index scan, optimize your codebase's docstrings for vector search. Ask your AI Agent:
+
+* To install the embedding-docstring globally in your IDE and run it against your codebase to rewrite docstrings into a more embedding-friendly format.
+  * You can find it in the [embedding-docstring skill guide](embedding-docstring/SKILL.md).
 
 > *"Audit and optimize docstrings across this project using the embedding-docstring skill, respecting .memignore."*
 
@@ -343,6 +346,8 @@ Get-Content .brain\server.log -Wait -Tail 30
 * Add `.env` and `.brain/` explicitly to your global or project `.gitignore` patterns to prevent API keys and secure indexes from leaking to version control platforms.
 
 ---
+
+To read more about the underlying design principles, architecture decisions, and future roadmap for Zerikai Memory, check out the [insight article](https://zerikai.com/blog/reduce-ai-ide-token-costs-with-zerikai-memory.html).
 
 ## License
 
