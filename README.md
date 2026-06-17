@@ -134,6 +134,14 @@ LEXICAL_RERANK_WEIGHT=0.05
 
 </details>
 
+#### 2a. Verify
+
+```bash
+python -c "from main import scan_workspace, query_memory; print('OK')"
+```
+
+You should see the startup banner followed by `OK`.
+
 ### 3. IDE Rule Enforcement
 
 To stop your AI agent from ignoring the memory protocol, copy these directives into your IDE's agent rules profile (e.g., `.cursorrules` or system prompt guidelines):
