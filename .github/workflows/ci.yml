@@ -3,8 +3,26 @@ name: Cross-Platform Install Test
 on:
   push:
     branches: [ main, master ]
+    paths-ignore:
+      - 'agent_rules/**'
+      - 'documentation/**'
+      - 'embedding-docstring/**'
+      - 'img/**'
+      - 'LICENSE'
+      - 'README.md'
+      - 'todo.md'
+      - 'zm_logo_70.png'
   pull_request:
     branches: [ main, master ]
+    paths-ignore:
+      - 'agent_rules/**'
+      - 'documentation/**'
+      - 'embedding-docstring/**'
+      - 'img/**'
+      - 'LICENSE'
+      - 'README.md'
+      - 'todo.md'
+      - 'zm_logo_70.png'
 
 jobs:
   test-install:
