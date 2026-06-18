@@ -1,10 +1,16 @@
+## zerikai_memory 🧠
+
+<p align="center">
+⭐ <strong>Bookmark the project:</strong> If you use this tool, drop a star to save it to your GitHub profile and track new performance updates.
+</p>
+
 <p align="center">
   <img width="908" height="510" src="zm_logo_70.png">
 </p>
 
 <p align="center">
   <strong>Never lose your AI context again.</strong><br/>
-  Persistent, workspace-isolated memory for every IDE — local-first, cost-aware, instant.
+  Persistent, workspace-isolated memory for every IDE, local-first, cost-aware, instant. zerikai_memory uses semantic indexing via a local MCP server to slash token costs while maintaining high-resolution codebase mapping.
 </p>
 
 <p align="center">
@@ -14,6 +20,11 @@
   <img src="https://img.shields.io/badge/DeepSeek-Cloud_Synthesis-1A73E8?style=for-the-badge" alt="DeepSeek">
   <img src="https://img.shields.io/badge/MCP-Model_Context_Protocol-6C3483?style=for-the-badge" alt="MCP">
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="MIT License">
+</p>
+
+<p align="center">
+💡<strong>Status: Active & Self-Contained.</strong><br/>
+This project is used daily and actively maintained by the author. Pull Requests and Issues are closed to keep maintenance overhead low. It is provided fully functional and ready for production use.
 </p>
 
 ---
@@ -360,3 +371,7 @@ To read more about the underlying design principles, architecture decisions, and
 ## License
 
 MIT License © [Zerikai](http://zerikai.com)
+
+<p align="center">
+🛠️ <strong>Support:</strong> This project is provided as-is for personal use. To prevent automated spam and AI-generated noise, direct email and issue tracking are disabled. For questions, please use the AI assistant zerikai.com I will get the message and get back to you, don't forget to leave a way to contact you.
+</p>
