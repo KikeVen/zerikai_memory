@@ -10,7 +10,7 @@
 
 <p align="center">
   <strong>Never lose your AI context again.</strong><br/>
-  Persistent, workspace-isolated memory for every IDE, local-first, cost-aware, instant. zerikai_memory uses semantic indexing via a local MCP server to slash token costs while maintaining high-resolution codebase mapping.
+zerikai_memory provides persistent, workspace-isolated memory for every IDE that is local-first, cost-aware, and instant. It uses deterministic Tree-Sitter code parsing indexing to capture entities and deep code descriptions like functions, classes, and docstrings into a local ChromaDB vector store. Accessed via a local MCP interface to slash token costs while maintaining high-resolution codebase mapping, it retrieves hyper-relevant context on query through L2 and Lexical re-indexing with strict source verification (Entity, File, Line Number, and L2). Designed to pair perfectly with low-cost DeepSeek APIs, it injects structured, highly precise local context instead of dumping raw, massive files, maximizing KV cache hits to radically reduce your active token costs.
 </p>
 
 <p align="center">
