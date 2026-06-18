@@ -39,4 +39,4 @@ colorama==0.4.6
 pywin32==311; sys_platform == 'win32'
 pywin32-ctypes==0.2.3; sys_platform == 'win32'
 caio==0.9.25; sys_platform == 'linux'
-aiofile==3.9.0
+aiofile==3.9.0; sys_platform == 'linux'
