@@ -30,3 +30,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
+
+    - name: Verify Workspace Import and Server Init
+      # We pass an environment variable if needed to force a local temp DB, or run the command directly
+      run: python -c "from main import scan_workspace, query_memory; print('OK')"
