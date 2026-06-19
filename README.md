@@ -163,7 +163,7 @@ To stop your AI agent from ignoring the memory protocol, copy these directives i
 * **Universal-Brain First:** The agent *must* query `universal-brain` before attempting raw file searches.
 * **Source Discipline:** Every answer *must* surface actual `file.py:line` citations with zero fabrication.
 
-### 4. Direct System Configurations
+### 4. IDE Registration
 
 1. Press `Ctrl+Shift+P` → **MCP: Add Local Server**
 2. Choose **STDIO**
