@@ -76,6 +76,8 @@ Your IDE       →  MCP Server (:stdio)        →        ▼
 
 ## Quick Start
 
+[![Zerikai Memory installation video](https://img.youtube.com/vi/sk8x-nbF0Cs/0.jpg)](https://www.youtube.com/watch?v=sk8x-nbF0Cs)
+
 ### 1. Install
 
 ```bash
