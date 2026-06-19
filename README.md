@@ -84,6 +84,8 @@ I have added a YouTube video walkthrough of the installation and setup process i
 
 <summary>Watch the installation video</summary>
 
+Click the image below to watch a step-by-step walkthrough of the installation and setup process:
+
 [![Zerikai Memory installation video](https://img.youtube.com/vi/sk8x-nbF0Cs/0.jpg)](https://www.youtube.com/watch?v=sk8x-nbF0Cs)
 
 </details>
