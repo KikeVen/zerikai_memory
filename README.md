@@ -76,6 +76,10 @@ Your IDE       →  MCP Server (:stdio)        →        ▼
 
 ## Quick Start
 
+I have added a YouTube video walkthrough of the installation and setup process in the first step below. If you prefer text instructions, just follow along with the code snippets.
+
+### 1. Install
+
 <details>
 
 <summary>Watch the installation video</summary>
@@ -83,8 +87,6 @@ Your IDE       →  MCP Server (:stdio)        →        ▼
 [![Zerikai Memory installation video](https://img.youtube.com/vi/sk8x-nbF0Cs/0.jpg)](https://www.youtube.com/watch?v=sk8x-nbF0Cs)
 
 </details>
-
-### 1. Install
 
 ```bash
 git clone https://github.com/your-username/zerikai_memory.git
