@@ -76,7 +76,13 @@ Your IDE       →  MCP Server (:stdio)        →        ▼
 
 ## Quick Start
 
+<details>
+
+<summary>Watch the installation video</summary>
+
 [![Zerikai Memory installation video](https://img.youtube.com/vi/sk8x-nbF0Cs/0.jpg)](https://www.youtube.com/watch?v=sk8x-nbF0Cs)
+
+</details>
 
 ### 1. Install
 
