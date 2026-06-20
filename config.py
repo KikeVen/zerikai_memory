@@ -110,3 +110,8 @@ SKIP_BARE_FILES = set(ast.literal_eval(os.getenv("SKIP_BARE_FILES", "[]")))
 ENABLE_LEXICAL_RERANK = os.getenv(
     "ENABLE_LEXICAL_RERANK", "false").lower() == "true"
 LEXICAL_RERANK_WEIGHT = float(os.getenv("LEXICAL_RERANK_WEIGHT", "0.05"))
+
+# Maximum number of documents to fetch from ChromaDB before applying lexical reranking.
+# A wider pool allows reranking to pull in keyword-relevant files that might be semantically distant.
+# Does NOT control the final answer size — see the fixed top-5 (`relevant = relevant[:5]`) cutoff applied after reranking in main.py.
+FETCH_CAP = int(os.getenv("FETCH_CAP", "75"))

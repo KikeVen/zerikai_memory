@@ -31,6 +31,7 @@ from config import (
     DEFAULT_MEMORY_MODE,
     ENABLE_LEXICAL_RERANK,
     ENABLE_TOKEN_TRACKING,
+    FETCH_CAP,
     LEXICAL_RERANK_WEIGHT,
     OLLAMA_HOST,
     OLLAMA_MODEL,
@@ -452,7 +453,7 @@ async def _build_section(
             # the per-section fetch_cap before sending to the LLM.
             # This lets the re-rank pull in semantically-distant but
             # keyword-relevant files (e.g. todo.md, ROADMAP.md).
-            pool_size = min(75, total_docs) if total_docs > 0 else 1
+            pool_size = min(FETCH_CAP, total_docs) if total_docs > 0 else 1
             results = collection.query(
                 query_texts=[section["query"]],
                 n_results=pool_size,
@@ -769,7 +770,8 @@ class ScanProgress:
     entities: int = 0
     skipped: int = 0
     errors: int = 0
-    started_at: float = field(default_factory=lambda: datetime.now(timezone.utc).timestamp())
+    started_at: float = field(
+        default_factory=lambda: datetime.now(timezone.utc).timestamp())
     completed: bool = False
     brief_status: str = "pending"  # pending, running, complete, failed
 
@@ -989,7 +991,6 @@ def _select_model(user_query: str) -> str:
         log.info("Model → deepseek-v4-pro (reasoning query)")
         return DEEPSEEK_MODEL_PRO
     return DEEPSEEK_MODEL_FAST
-
 
 
 # ---------------------------------------------------------------------------
@@ -1313,7 +1314,7 @@ async def query_memory(
         where = {"category": category} if category else None
         results = collection.query(
             query_texts=[search_query],
-            n_results=5,
+            n_results=FETCH_CAP,
             where=where,
             include=["documents", "metadatas", "distances"],
         )
@@ -1372,6 +1373,11 @@ async def query_memory(
                         "query_memory | lexical re-rank applied, top result: %s",
                         (relevant[0][1] or {}).get("name", "unknown"),
                     )
+
+                # Final number of reranked results passed to synthesis — kept separate from
+                # FETCH_CAP (which only controls the pre-rerank candidate pool size) to cap
+                # answer scope and cost regardless of how wide FETCH_CAP is set.
+                relevant = relevant[:5]
 
                 # Build location-tagged context and sources list
                 context_parts = []
@@ -1786,7 +1792,8 @@ async def _background_scan(
         _llm_sem = asyncio.Semaphore(2)    # limit concurrent LLM calls
 
         # Per-worker result: entities to batch-write, or saved/skipped/error status
-        EntityBatch = tuple[list[str], list[str], list[dict]]  # ids, docs, metas
+        EntityBatch = tuple[list[str], list[str],
+                            list[dict]]  # ids, docs, metas
         WorkerResult = tuple[Path, str, int, EntityBatch | None]
         #                           rel_path, status, entity_count, optional batch
 
@@ -1982,7 +1989,8 @@ async def _background_scan(
         )
 
     except Exception as exc:
-        log.error("_background_scan | fatal error for %s: %s", display_name, exc)
+        log.error("_background_scan | fatal error for %s: %s",
+                  display_name, exc)
         progress.completed = True
         progress.brief_status = "failed"
         progress.errors += 1
@@ -2544,7 +2552,8 @@ async def scan_status(workspace: str) -> str:
         # Estimate remaining time
         if progress.scanned > 0:
             rate = progress.scanned / elapsed if elapsed > 0 else 0
-            remaining = (progress.total_files - progress.scanned) / rate if rate > 0 else 0
+            remaining = (progress.total_files - progress.scanned) / \
+                rate if rate > 0 else 0
             eta = f"~{remaining:.0f}s remaining"
         else:
             eta = "estimating..."
