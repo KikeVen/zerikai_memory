@@ -1,9 +1,11 @@
 """Configuration hub for the zerikai_memory MCP server.
-
-Defines all environment-variable-driven settings, API credentials,
-pricing tables, and routing thresholds used by main.py. Loaded once
-at import time via python-dotenv. No side effects beyond reading
-os.environ and creating DB_PATH.
+Defines all environment-variable-driven settings via python-dotenv:
+DeepSeek API credentials (DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL), Ollama
+connection (OLLAMA_HOST, OLLAMA_MODEL), pricing tables (DEEPSEEK_PRICING),
+routing thresholds (CLOUD_ESCALATION_WORD_COUNT), ChromaDB settings
+(QUERY_DISTANCE_THRESHOLD, FETCH_CAP), and lexical re-rank configuration.
+Loaded once at import time. Side effect: reads os.environ and creates
+DB_PATH directory.
 """
 
 import ast

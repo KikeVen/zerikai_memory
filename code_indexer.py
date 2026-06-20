@@ -1,15 +1,10 @@
 """Multi-language code entity extractor using tree-sitter.
-
 Replaces LLM-based code indexing with deterministic parsing.
 Extracts functions, methods, classes, and their docstrings/JSDoc
 as individual indexable entities. No API calls, no token costs,
-no empty responses.
-
-Supports: Python, JavaScript, TypeScript, TSX
-          (extensible via tree-sitter grammar packages)
-
-Requires: pip install tree-sitter tree-sitter-python
-          tree-sitter-javascript tree-sitter-typescript
+no empty responses. Supports: Python, JavaScript, TypeScript, TSX
+(extensible via tree-sitter grammar packages). Requires: pip install
+tree-sitter tree-sitter-python tree-sitter-javascript tree-sitter-typescript.
 """
 
 from __future__ import annotations
@@ -159,7 +154,11 @@ for config in LANGUAGE_CONFIGS.values():
 
 @dataclass
 class CodeEntity:
-    """A single indexable code entity extracted by tree-sitter from a source file."""
+    """Single code entity extracted by tree-sitter for ChromaDB vector indexing.
+    Holds the signature, docstring/JSDoc, and metadata for one function,
+    method, or class. The document_text field is what tree-sitter embeds
+    into ChromaDB. Pure dataclass — no methods, no side effects.
+    """
 
     entity_type: str  # "function", "method", "class"
     name: str  # e.g. "scan_workspace"
@@ -182,20 +181,25 @@ class CodeEntity:
 
 
 def get_supported_extensions() -> set[str]:
-    """Return all file extensions that can be parsed by tree-sitter."""
+    """Return all file extensions parsable by tree-sitter grammar packages.
+    Derived from LANGUAGE_CONFIGS registry — includes .py, .js, .ts, .css,
+    .html, .md and variants. Pure, deterministic, read-only.
+    """
     return set(_EXTENSION_MAP.keys())
 
 
 def extract_entities(source_code: str, file_path: str) -> list[CodeEntity]:
     """Parse a source file with tree-sitter and extract all functions, classes, and methods.
-
-    Automatically selects the correct tree-sitter grammar based on file extension.
-    Returns empty list for unsupported extensions.
-
+    Routes by file extension: .py → _extract_python, .js/.ts/.tsx →
+    _extract_js_like, .css → _extract_css, .html → _extract_html,
+    .md → _extract_markdown. Uses tree-sitter grammars from
+    tree-sitter-python, tree-sitter-javascript, tree-sitter-typescript,
+    tree-sitter-css, tree-sitter-html, and tree-sitter-markdown packages.
+    Returns empty list for unsupported extensions. No API calls, no side
+    effects beyond CPU parsing.
     Args:
         source_code: Raw source code.
         file_path: Relative path from workspace root (used for extension detection).
-
     Returns:
         List of CodeEntity objects, one per function/method/class.
     """
@@ -232,7 +236,6 @@ def _extract_python(
     tree, source_code: str, file_path: str, config: LanguageConfig, entities: list[CodeEntity]
 ) -> None:
     """Walk the tree-sitter CST for Python function and class definitions.
-
     Recurses into class bodies to extract nested methods. Handles both
     bare and decorated definitions via tree-sitter node types. Mutates
     the entities list in-place — no return value. No guarantees on
@@ -245,7 +248,13 @@ def _extract_python(
     def _extract_from_body(
         body_node: Node, parent_class: str | None
     ) -> None:
-        """Recursively extract functions and classes from a block body."""
+        """Walk a tree-sitter block body node for function/class definitions.
+        Dispatches function_definition and class_definition children to
+        _extract_python_function / _extract_python_class. Unwraps
+        decorated_definition nodes to extract inner definitions with
+        decorator lists. Recurses into class bodies for nested methods.
+        Mutates the entities list in-place — no return value.
+        """
         for child in body_node.named_children:
             if child.type == "function_definition":
                 entity = _extract_python_function(
@@ -303,11 +312,12 @@ def _extract_python_function(
     language: str,
     parent_class: str | None,
 ) -> CodeEntity | None:
-    """Build a CodeEntity from a tree-sitter Python function node.
-
-    Extracts the name, docstring, decorators, parameters (via
-    _extract_python_params), and return type annotation. Returns
-    None if the node lacks a name field. Pure — no side effects.
+    """Build a CodeEntity from a tree-sitter Python function_definition node.
+    Extracts name, docstring (via _extract_python_docstring), decorators
+    (via _extract_python_decorators), params (via _extract_python_params),
+    and return type via tree-sitter's child_by_field_name API. Returns
+    None if the node lacks a name field. Sets entity_type to "method"
+    when parent_class is provided. Pure — no side effects.
     """
     name_node = node.child_by_field_name("name")
     if name_node is None:
@@ -368,10 +378,11 @@ def _extract_python_class(
     file_path: str,
     language: str,
 ) -> CodeEntity | None:
-    """Build a CodeEntity from a tree-sitter Python class node.
-
-    Extracts the name, base classes, docstring, and decorators.
-    Returns None if the node lacks a name field. Pure.
+    """Build a CodeEntity from a tree-sitter Python class_definition node.
+    Extracts name, base classes from argument_list children, docstring
+    (via _extract_python_docstring), and decorators (via
+    _extract_python_decorators) using tree-sitter CST. Returns None
+    if the node lacks a name field. Pure — no side effects.
     """
     name_node = node.child_by_field_name("name")
     if name_node is None:
@@ -422,10 +433,10 @@ def _extract_python_class(
 
 def _extract_python_docstring(node: Node, lines: list[str]) -> str | None:
     """Extract the docstring from a tree-sitter Python function or class body.
-
     Walks the body block for the first expression_statement containing a
-    tree-sitter string node. Handles both single-line and multi-line
-    docstrings. Returns None if no docstring is found.
+    tree-sitter string node (type="string"). Handles both single-line and
+    multi-line docstrings via start_point/end_point slicing. Returns None
+    if no docstring is found or the node has no body. Pure — no side effects.
     """
     body = node.child_by_field_name("body")
     if body is None:
@@ -463,10 +474,10 @@ def _extract_python_docstring(node: Node, lines: list[str]) -> str | None:
 
 def _extract_python_decorators(node: Node, source_bytes: bytes) -> list[str]:
     """Extract decorator names from a tree-sitter Python function/class node.
-
-    Handles both decorated_definition nodes (named children) and bare
-    function/class nodes (prev_named_sibling walk). Uses tree-sitter CST
-    navigation. Returns empty list if no decorators found. Pure.
+    Two-strategy routing: decorated_definition nodes search named children
+    for decorator-typed nodes; bare function/class nodes walk
+    prev_named_sibling via tree-sitter CST. Returns empty list if no
+    decorators found. Pure — deterministic, no side effects.
     """
     decorators = []
 
@@ -487,10 +498,11 @@ def _extract_python_decorators(node: Node, source_bytes: bytes) -> list[str]:
 
 def _extract_python_params(node: Node, source_bytes: bytes) -> list[dict]:
     """Extract parameter metadata from a tree-sitter Python function node.
-
-    Handles identifier, typed_parameter, default_parameter,
-    typed_default_parameter, and splat patterns. Each dict has keys:
-    name, type_annotation, default. Uses tree-sitter CST. Pure.
+    Routes by tree-sitter child type: identifier, typed_parameter,
+    default_parameter, typed_default_parameter, list_splat_pattern,
+    and dictionary_splat_pattern. Each dict has keys: name,
+    type_annotation, default. Uses tree-sitter CST child iteration.
+    Pure — deterministic, no side effects.
     """
     params_node = node.child_by_field_name("parameters")
     if params_node is None:
@@ -559,9 +571,9 @@ def _extract_python_params(node: Node, source_bytes: bytes) -> list[dict]:
 
 def _extract_python_return_type(node: Node, source_bytes: bytes) -> str | None:
     """Extract the return type annotation from a tree-sitter Python function node.
-
-    Uses the child_by_field_name('return_type') API. Returns None
-    if no return type annotation is present. Pure.
+    Uses tree-sitter's child_by_field_name('return_type') API to find the
+    type annotation child. Returns None if no return type annotation is
+    present. Pure — deterministic, no side effects.
     """
     return_type_node = node.child_by_field_name("return_type")
     if return_type_node is None:
@@ -578,10 +590,13 @@ def _extract_js_like(
     tree, source_code: str, file_path: str, config: LanguageConfig, entities: list[CodeEntity]
 ) -> None:
     """Walk the tree-sitter CST for JS/TS/TSX function, method, and class
-    definitions. Handles function_declaration, class_declaration,
-    method_definition, and arrow functions via lexical_declaration.
-    Recurses into class bodies and nested blocks. Mutates entities list
-    in-place — no ordering guarantee. Pure beyond the side-effect append.
+    definitions. Routes by node type: function_declaration →
+    _extract_js_function, class_declaration → _extract_js_class (with
+    body recursion for methods), method_definition → _extract_js_function,
+    arrow functions via lexical_declaration → _extract_arrow_function.
+    Uses tree-sitter-javascript and tree-sitter-typescript grammars.
+    Mutates entities list in-place — no ordering guarantee. No side
+    effects beyond the list append.
     """
     lines = source_code.split("\n")
     source_bytes = source_code.encode("utf-8")
@@ -639,11 +654,12 @@ def _extract_js_function(
     language: str,
     parent_class: str | None,
 ) -> CodeEntity | None:
-    """Build a CodeEntity from a tree-sitter JS/TS function or method node.
-
-    Extracts the name, JSDoc (via _extract_jsdoc), parameters (via
-    _extract_js_params), and return type. Returns None if the node
-    lacks a name field. Pure.
+    """Build a CodeEntity from a tree-sitter JS/TS function_declaration or
+    method_definition node. Extracts name via child_by_field_name('name'),
+    JSDoc (via _extract_jsdoc), params (via _extract_js_params), and
+    return type (via _extract_js_return_type). Returns None if the node
+    lacks a name field. Sets entity_type to "method" when parent_class
+    is provided. Pure — no side effects.
     """
     name_node = node.child_by_field_name("name")
     if name_node is None:
@@ -714,10 +730,11 @@ def _extract_arrow_function(
     parent_class: str | None,
 ) -> CodeEntity | None:
     """Build a CodeEntity from a tree-sitter const arrow function node.
-
-    Extracts from patterns like `const myFunc = (params) => { ... }`.
-    Looks up the arrow_function value child for params and return type.
-    Returns None if the node lacks a name field. Pure.
+    Extracts from lexical_declaration patterns like `const myFunc =
+    (params) => { ... }`. Looks up the arrow_function value child via
+    child_by_field_name('value'), then extracts params and return type.
+    Returns None if the node lacks a name field or the value child is
+    not an arrow_function. Pure — no side effects.
     """
     name_node = node.child_by_field_name("name")
     if name_node is None:
@@ -781,10 +798,11 @@ def _extract_js_class(
     file_path: str,
     language: str,
 ) -> CodeEntity | None:
-    """Build a CodeEntity from a tree-sitter JS/TS class node.
-
-    Extracts the class name, JSDoc comment, and builds a signature.
-    Returns None if the node lacks a name field. Pure.
+    """Build a CodeEntity from a tree-sitter JS/TS class_declaration node.
+    Extracts the class name via child_by_field_name('name'), JSDoc
+    comment (via _extract_jsdoc), and builds a `class Name` signature.
+    Returns None if the node lacks a name field. Pure — deterministic,
+    no side effects.
     """
     name_node = node.child_by_field_name("name")
     if name_node is None:
@@ -819,8 +837,9 @@ def _extract_js_class(
 def _extract_jsdoc(node: Node, lines: list[str]) -> str | None:
     """Extract JSDoc comment preceding a tree-sitter JS/TS function or class.
     Walks backwards from the node's start line through /** ... */ block
-    comments, stripping JSDoc markers and leading asterisks. Returns None
-    if no JSDoc block is found above the node. Pure — no side effects.
+    comments, stripping JSDoc markers and leading asterisks. Falls through
+    single-line // comments. Returns None if no JSDoc block is found above
+    the node or the node is at line 0. Pure — no side effects.
     """
     start_line = node.start_point[0]
     # Look at the line just before this node's start
@@ -863,10 +882,10 @@ def _extract_jsdoc(node: Node, lines: list[str]) -> str | None:
 
 def _extract_js_params(node: Node, source_bytes: bytes) -> list[dict]:
     """Extract parameter metadata from a tree-sitter JS/TS function or arrow node.
-
-    Handles identifier, required_parameter (TS typed), and optional_parameter
-    (TS optional/default). Each dict has keys: name, type_annotation, default.
-    Uses tree-sitter CST. Pure.
+    Routes by tree-sitter child type: identifier, required_parameter (TS
+    typed), and optional_parameter (TS optional/default with '?' or '=').
+    Each dict has keys: name, type_annotation, default. Uses tree-sitter
+    CST child iteration. Pure — deterministic, no side effects.
     """
     params_node = node.child_by_field_name("parameters")
     if params_node is None:
@@ -915,9 +934,9 @@ def _extract_js_params(node: Node, source_bytes: bytes) -> list[dict]:
 
 def _extract_js_return_type(node: Node, source_bytes: bytes) -> str | None:
     """Extract the return type annotation from a tree-sitter JS/TS function node.
-
-    Uses the child_by_field_name('return_type') API. Returns None
-    if no return type annotation is present. Pure.
+    Uses tree-sitter's child_by_field_name('return_type') API to find the
+    type_annotation child. Returns None if no return type annotation is
+    present. Pure — deterministic, no side effects.
     """
     return_type_node = node.child_by_field_name("return_type")
     if return_type_node is None:
@@ -932,10 +951,11 @@ def _extract_js_return_type(node: Node, source_bytes: bytes) -> str | None:
 def _extract_css(
     tree, source_code: str, file_path: str, config: LanguageConfig, entities: list[CodeEntity]
 ) -> None:
-    """Walk the tree-sitter CST for CSS rule sets. Extracts each rule_set
-    node with its selectors as a CodeEntity containing the full rule text.
-    Mutates entities list in-place. No guarantees on selector ordering —
-    extraction order follows tree-sitter's depth-first CST traversal.
+    """Walk the tree-sitter CST for CSS rule sets using tree-sitter-css grammar.
+    Extracts each rule_set node with its selectors as a CodeEntity
+    containing the full rule text. Semantically empty rule sets (no
+    selectors) are skipped. Mutates entities list in-place. No guarantees
+    on selector ordering — follows tree-sitter's depth-first CST traversal.
     """
     root = tree.root_node
 
@@ -978,11 +998,12 @@ def _extract_css(
 def _extract_html(
     tree, source_code: str, file_path: str, config: LanguageConfig, entities: list[CodeEntity]
 ) -> None:
-    """Walk the tree-sitter CST for semantic HTML elements using the
-    tree-sitter-html grammar. Extracts elements with semantic tag names
-    (main, header, section, article, nav, aside, footer), id-bearing
-    elements, and script/style elements. Captures preceding HTML comments
-    as docstrings. Mutates entities list in-place.
+    """Walk the tree-sitter CST for semantic HTML elements using tree-sitter-html.
+    Extracts elements with semantic tag names (main, header, section,
+    article, nav, aside, footer), id-bearing elements (via attribute
+    parsing), and script/style elements. Captures preceding HTML comments
+    (type="comment") as docstrings. Mutates entities list in-place.
+    Skips non-semantic, non-id elements. Pure beyond the list mutation.
     """
     root = tree.root_node
     semantic_tags = {"main", "header", "footer", "section", "article", "nav", "aside"}
@@ -1070,12 +1091,12 @@ def _extract_html(
 def _extract_markdown(
     tree, source_code: str, file_path: str, config: LanguageConfig, entities: list[CodeEntity]
 ) -> None:
-    """Walk the tree-sitter-markdown CST and emit each section as a single
-    rich entity containing all its prose, tables, lists, blockquotes, and
-    fenced code blocks. Child sections are recursed into as separate
-    entities to preserve breadcrumb hierarchy in vector search. Loose
-    content before the first heading is captured as a preamble entity.
-    Mutates entities list in-place. Uses tree-sitter-markdown grammar.
+    """Walk the tree-sitter-markdown CST and emit sections as ChromaDB entities.
+    Each section entity contains all its prose, tables, lists, blockquotes,
+    and fenced code blocks. Child sections are recursed as separate
+    entities for breadcrumb hierarchy in vector search. Loose content
+    before the first heading becomes a preamble entity. Mutates entities
+    list in-place. Uses tree-sitter-markdown grammar.
     """
     root = tree.root_node
 
@@ -1084,8 +1105,11 @@ def _extract_markdown(
     # -------------------------------------------------------------------
 
     def _heading_info(node: Node) -> tuple[int, str] | None:
-        """Return (level, text) for an atx_heading child, or None if the
-        node isn't a recognised heading."""
+        """Parse a tree-sitter atx_heading node into (level, text).
+        Matches atx_h1_marker through atx_h6_marker children for the
+        heading level, and inline children for the text. Returns None
+        if no marker+text combination is found. Pure, deterministic.
+        """
         level = 1
         text = ""
         found_marker = False
@@ -1114,7 +1138,12 @@ def _extract_markdown(
         start_lineno: int,
         end_lineno: int,
     ) -> None:
-        """Append a CodeEntity to the shared list, skipping empty bodies."""
+        """Append a CodeEntity to the entities list with markdown metadata.
+        Creates a CodeEntity with entity_type='markdown_section', the
+        given name/signature/document_text, and the current file_path
+        and language from the enclosing _extract_markdown scope. Skips
+        entities with empty document_text. Pure beyond the list append.
+        """
         if not document_text.strip():
             return
         entities.append(CodeEntity(
@@ -1218,11 +1247,10 @@ def _extract_markdown(
 
 
 def _clean_docstring(docstring: str) -> str:
-    """Clean a docstring/JSDoc into embedding-ready text.
-
-    Strips triple quotes and JSDoc markers from the raw text, joins
-    consecutive meaningful lines (stops at first blank line). Returns
-    the full extracted text with no truncation. Pure.
+    """Clean a docstring/JSDoc into embedding-ready text for ChromaDB.
+    Strips triple quotes and JSDoc markers, joins consecutive meaningful
+    lines, truncates at the first blank line. Pure — no side effects,
+    deterministic output.
     """
     if not docstring:
         return ""

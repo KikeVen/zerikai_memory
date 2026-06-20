@@ -11,6 +11,16 @@ makes the entity findable and understandable when an LLM retrieves it via
 semantic search. For HTML files, treat `<!-- -->` comment blocks as
 docstring equivalents for the section or component that follows.
 
+## Respect project ignore rules
+
+Before reading or auditing any file, check for a `.memignore` file at the
+project root (or nearest parent directory). If the target file or its
+containing directory matches a pattern in `.memignore`, do not read,
+audit, or propose changes to it — state that it was skipped due to
+`.memignore` and stop. This applies even if the user's request names the
+file explicitly; `.memignore` exclusions take precedence over a single
+audit request unless the user explicitly overrides it for that file.
+
 ## Density checklist
 
 A good embedding docstring must answer these questions in the prose body
@@ -35,6 +45,18 @@ A good embedding docstring must answer these questions in the prose body
   scale with the function signature. Keep them standard.
 - If the prose body is longer than the function body: trim. A docstring
   should not outweigh the code it describes.
+
+## No blank lines anywhere in the docstring
+
+No blank lines anywhere in the docstring — not in the prose body, and not
+between the prose body and Args/Returns/Raises, and not between
+Args/Returns/Raises sections themselves. A blank line anywhere in the
+docstring can cause parsers and tree-sitter-based extraction to treat the
+docstring as multiple separate fragments, or to stop at the first blank
+line and silently truncate everything after it — losing routing,
+guarantees, side effects, or entire Args/Returns/Raises sections from
+embedding. Write the entire docstring, prose body through Raises, as one
+continuous block with no blank lines at any point.
 
 ## Applies to
 
@@ -77,13 +99,10 @@ in `<file>`":
 def function_name(param: str) -> int:
     """Summary sentence. Extended description of routing, guarantees,
     and side effects. Names any external technology explicitly.
-
     Args:
         param: What it represents.
-
     Returns:
         Description of return value and what the caller should do with it.
-
     Raises:
         SpecificError: When this happens and why.
     """
@@ -92,6 +111,24 @@ def function_name(param: str) -> int:
 Args/Returns/Raises are structural — write them according to the
 function's actual signature. The prose body above them is where the
 checklist applies.
+
+## Format (JavaScript / TypeScript)
+
+```javascript
+/**
+ * Summary sentence. Extended description of routing, guarantees,
+ * and side effects. Names any external technology explicitly.
+ * @param {string} param - What it represents.
+ * @returns {number} Description of return value and what the caller should do with it.
+ * @throws {SpecificError} When this happens and why.
+ */
+function functionName(param) {
+```
+
+`@param`/`@returns`/`@throws` are structural, same role as Python's
+Args/Returns/Raises — write them according to the function's actual
+signature. The prose body above them is where the checklist applies. No
+blank lines anywhere in the block, same as Python.
 
 ## Format (HTML)
 

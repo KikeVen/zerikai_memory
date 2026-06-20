@@ -100,10 +100,11 @@ ol_client = Client(host=OLLAMA_HOST)
 # Token usage tracking database
 # ---------------------------------------------------------------------------
 def _init_db():
-    """Initialises zerikai.db via sqlite3: creates token_usage and
+    """Initialise zerikai.db via sqlite3: creates token_usage and
     workspace_registry tables (IF NOT EXISTS), auto-migrates missing
-    columns, and enables WAL mode. Skips entirely if token tracking
-    is disabled. Idempotent.
+    columns (e.g. estimated_cost_usd), creates indices, and enables
+    WAL mode. Skips entirely if ENABLE_TOKEN_TRACKING is disabled.
+    Idempotent — safe to call on every startup.
     """
     if not ENABLE_TOKEN_TRACKING:
         return
@@ -173,11 +174,11 @@ def _track_token_usage(
     model: str,
     usage: object,
 ):
-    """Records DeepSeek API token usage and estimated cost to the
-    zerikai.db sqlite3 token_usage table. Best-effort: returns
-    silently if tracking is disabled, usage is None, or insert
-    fails. Side effect: inserts one row per call.
-
+    """Record DeepSeek API token usage and estimated cost to zerikai.db sqlite3.
+    Best-effort: returns silently if ENABLE_TOKEN_TRACKING is disabled,
+    usage is None, or insert fails. Routes pricing via model_key
+    ('v4-pro' vs 'v4-flash') to DEEPSEEK_PRICING. Side effect: inserts
+    one row per call into token_usage table.
     Args:
         workspace_id: The workspace identifier
         operation: Type of operation (query, brief_synthesis, etc.)
@@ -243,26 +244,15 @@ _init_db()
 # ---------------------------------------------------------------------------
 
 def _derive_workspace_id(workspace_path: str) -> tuple[str, str]:
-    """
-    Derives a stable workspace UUID from a filesystem path.
-
-    Returns a tuple of (workspace_uuid, display_name).
-
-    The UUID is generated once per unique normalized path and stored in the workspace_registry
-    table within zerikai.db. Subsequent calls with the same path (even with different formatting,
-    case, or trailing slashes) return the same UUID.
-
-    Display name is derived from the folder name and used for human-readable output.
-
+    """Derive a stable workspace UUID from a filesystem path via zerikai.db sqlite3.
+    Normalizes the path (case, separators, trailing slashes), then looks
+    up or creates a workspace_registry entry. Subsequent calls with the
+    same path return the same UUID. Deterministic per path. Side effect:
+    inserts a new row on first call for each unique path.
     Args:
         workspace_path: Filesystem path to the workspace
-
     Returns:
         tuple: (workspace_uuid, display_name)
-
-    Example:
-        >>> _derive_workspace_id("/home/user/projects/my-app")
-        ('a3f8c2d1-5e9f-4b7a-9c8d-1e2f3a4b5c6d', 'my_app')
     """
     if not workspace_path:
         return ("default", "default")
@@ -340,15 +330,14 @@ def _derive_workspace_id(workspace_path: str) -> tuple[str, str]:
 
 
 def _resolve_workspace(identifier: str) -> tuple[str, str, str]:
-    """
-    Resolves a workspace identifier (UUID, short UUID, or display name) to its details.
-
+    """Resolve a workspace identifier via zerikai.db sqlite3 to (uuid, name, path).
+    Three-tier routing: exact UUID match → short UUID (first 8+ chars)
+    LIKE match → display_name exact match. Reads from workspace_registry
+    table. Pure read — no side effects.
     Args:
         identifier: Full UUID, short UUID (first 8+ chars), or display name
-
     Returns:
         tuple: (workspace_uuid, display_name, workspace_path)
-
     Raises:
         ValueError: If no workspace matches the identifier
     """
@@ -401,9 +390,10 @@ UNINITIALIZED_MARKER = "<!-- ZERIKAI_PENDING_SYNTHESIS -->"
 
 
 def _truncate_for_brief(doc: str) -> str:
-    """Truncates a docstring to its first sentence only — keeps
-    brief synthesis cheap. Skips any lead blank lines, then splits
-    at the first period followed by a space (min 20 chars).
+    """Truncate a docstring to its first sentence for cheap brief synthesis.
+    Skips leading blank lines, joins remaining text, then splits at the
+    first period+space found after position 20. Used by _build_section
+    to keep DeepSeek/Ollama prompt context compact. Pure, deterministic.
     """
     lines = doc.strip().split("\n")
     meaningful = []
@@ -426,12 +416,12 @@ async def _build_section(
     use_cloud: bool,
     workspace_id: str,
 ) -> tuple[str, str]:
-    """Build one brief section: queries ChromaDB (pool=75), lexically
-    re-ranks by keyword overlap in entity name, docstring, and source_file,
-    trims to per-section fetch_cap, then feeds reordered context to DeepSeek
-    or Ollama. Runs via asyncio.gather — all 9 sections fire in parallel.
+    """Build one brief section: queries ChromaDB, lexically re-ranks,
+    and synthesizes via DeepSeek or Ollama. Runs in parallel via
+    asyncio.gather across all 9 sections. Lexical re-ranking boosts
+    results by keyword overlap in entity name, docstring, and
+    source_file. Trims to per-section fetch_cap before LLM call.
     Side effect: writes token usage to zerikai.db sqlite3.
-
     Args:
         section: Dict with query, prompt_template, heading, optional
                  fetch_cap (default 20) and full_context (bool).
@@ -439,7 +429,6 @@ async def _build_section(
         display_name: Project name for prompt formatting.
         use_cloud: True → DeepSeek, False → Ollama.
         workspace_id: UUID for _track_token_usage logging.
-
     Returns:
         (heading, content) on success, (heading, error) on failure.
     """
@@ -543,12 +532,11 @@ async def _build_section(
 
 
 async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud: bool = True) -> str:
-    """Builds a 9-section project brief: fires all section-specific
-    ChromaDB queries in parallel via asyncio.gather, delegating each to
-    _build_section for lexical re-ranking, pool sizing, and fetch_cap
-    trimming. Routes to DeepSeek or Ollama based on SYNTHESIZE_WITH_CLOUD.
-    Side effect: saves assembled markdown to .brain/contexts/<id>.md.
-
+    """Build a 9-section project brief via parallel ChromaDB queries.
+    Fires all section-specific queries via asyncio.gather, delegating
+    each to _build_section. Routes to DeepSeek or Ollama based on
+    SYNTHESIZE_WITH_CLOUD. Side effect: saves assembled markdown to
+    .brain/contexts/<id>.md. Overwrites existing brief.
     Args:
         workspace_id: The workspace UUID (for collection access)
         display_name: Human-readable project name (for brief title and prompts)
@@ -787,10 +775,12 @@ async def _background_brief_synthesis(
     context_file: Path,
     progress: ScanProgress | None = None,
 ) -> None:
-    """Fire-and-forget brief synthesis after scan to avoid MCP
-    timeouts. Delegates to _synthesize_deep_brief (cloud/local
-    via SYNTHESIZE_WITH_CLOUD). Creates/overwrites
-    .brain/contexts/<id>.md. Updates progress.brief_status if provided."""
+    """Fire-and-forget brief synthesis after scan to avoid MCP timeouts.
+    Delegates to _synthesize_deep_brief (cloud/local via
+    SYNTHESIZE_WITH_CLOUD). Creates/overwrites .brain/contexts/<id>.md.
+    Updates progress.brief_status to 'Complete' or 'Failed'. Launched
+    via asyncio.create_task — no await, no return value.
+    """
     try:
         new_brief = await _synthesize_deep_brief(workspace_id, display_name, use_cloud=SYNTHESIZE_WITH_CLOUD)
         context_file.write_text(new_brief, encoding="utf-8")
@@ -805,15 +795,20 @@ async def _background_brief_synthesis(
 
 
 def _get_collection(workspace_id: str):
-    """Returns (or creates) the ChromaDB collection for this workspace."""
+    """Return the ChromaDB PersistentClient collection for a workspace.
+    Uses db_client.get_or_create_collection with name `memory_{id}`.
+    Idempotent — creates on first call, reuses thereafter. Thread-safe
+    when callers hold _db_lock. No other side effects.
+    """
     return db_client.get_or_create_collection(f"memory_{workspace_id}")
 
 
 def _load_project_context(workspace_id: str) -> str:
-    """Loads the per-workspace project brief from
-    .brain/contexts/<id>.md as the stable prefix for DeepSeek KV
-    cache optimisation. Creates contexts/ on first call. Falls back
-    to a placeholder string if no brief file exists.
+    """Load the per-workspace project brief from .brain/contexts/<id>.md.
+    Used as the stable prefix for DeepSeek KV cache optimisation via
+    _build_system_message. Creates contexts/ directory on first call.
+    Falls back to a placeholder string if no brief file exists. Pure
+    read — no writes beyond mkdir.
     """
     context_dir = Path(DB_PATH) / "contexts"
     context_dir.mkdir(parents=True, exist_ok=True)
@@ -831,10 +826,11 @@ def _load_project_context(workspace_id: str) -> str:
 
 
 def _build_system_message(workspace_id: str) -> str:
-    """Assembles the DeepSeek system message: fixed role instruction
-    + per-workspace project brief. Order matters — the identical
-    prefix maximises DeepSeek KV cache hits across calls. Logs token
-    count via tiktoken. Cache is best-effort.
+    """Assemble the DeepSeek system message with tiktoken for KV cache optimisation.
+    Concatenates a fixed role instruction with the per-workspace project
+    brief from _load_project_context. The identical prefix maximises
+    DeepSeek KV cache hits across calls (best-effort, no guarantees).
+    Logs token count via tiktoken's cl100k_base encoding. Pure read-only.
     """
     role_instruction = (
         "You are a project memory assistant. "
@@ -886,9 +882,9 @@ _CHUNK_OVERLAP_LINES = 20    # overlap between chunks for context continuity
 
 
 def _load_memignore(workspace_path: str) -> list[str]:
-    """
-    Reads .memignore from the workspace root and returns a list of patterns.
-    Lines starting with # and blank lines are ignored.
+    """Read .memignore from the workspace root via fnmatch-compatible parsing.
+    Lines starting with # and blank lines are ignored. Returns empty list
+    if no .memignore file exists. Pure read — no side effects.
     """
     memignore = Path(workspace_path) / ".memignore"
     if not memignore.exists():
@@ -902,10 +898,10 @@ def _load_memignore(workspace_path: str) -> list[str]:
 
 
 def _is_ignored(file_path: Path, workspace_root: Path, patterns: list[str]) -> bool:
-    """Returns True if file should be skipped based on .memignore
-    gitignore-style patterns via fnmatch. Two matching strategies:
-    matches any single path component (directory names), then full
-    relative path. Returns False on path resolution error.
+    """Check if a file matches .memignore patterns via fnmatch.
+    Two-strategy routing: matches any single path component (directory
+    names), then matches full relative posix path. Returns False on
+    path resolution error. Deterministic for a given pattern set.
     """
     try:
         rel = file_path.relative_to(workspace_root)
@@ -932,10 +928,11 @@ def _chunk_file_content(
     chunk_size: int = _CHUNK_SIZE_LINES,
     overlap: int = _CHUNK_OVERLAP_LINES,
 ) -> list[str]:
-    """Splits file content into overlapping line-based chunks.
+    """Split file content into overlapping line-based chunks for LLM indexing.
     Single-chunk files pass through as-is. Multi-chunk files use
     configurable overlap (default 20 lines) for context continuity.
-    Always returns list[str] with at least one element. Pure.
+    Always returns list[str] with at least one element. Deterministic
+    for given inputs — no side effects beyond string allocation.
     """
     lines = content.splitlines(keepends=True)
     if len(lines) <= chunk_size:
@@ -957,10 +954,10 @@ def _chunk_file_content(
 # ---------------------------------------------------------------------------
 
 def _should_use_cloud(user_query: str, use_cloud: bool | None) -> bool:
-    """Routes queries to DeepSeek or Ollama via a 4-step priority
-    chain: explicit override overrides all, then keyword escalation
-    (architectural terms), then length escalation (40+ words), then
-    DEFAULT_MEMORY_MODE. Pure, deterministic.
+    """Route queries to DeepSeek or Ollama via a 4-step priority chain.
+    Priority: explicit use_cloud override → CLOUD_ESCALATION_KEYWORDS
+    keyword match → CLOUD_ESCALATION_WORD_COUNT length threshold →
+    DEFAULT_MEMORY_MODE fallback. Pure, deterministic, no side effects.
     """
     if use_cloud is not None:
         return use_cloud
@@ -981,9 +978,9 @@ def _should_use_cloud(user_query: str, use_cloud: bool | None) -> bool:
 
 
 def _select_model(user_query: str) -> str:
-    """
-    Within cloud mode, selects fast vs pro model.
-    Pro is reserved for queries that explicitly signal deep reasoning need.
+    """Select DEEPSEEK_MODEL_FAST vs DEEPSEEK_MODEL_PRO based on query keywords.
+    Pro is reserved for queries containing architectural trigger words
+    (architect, design, tradeoff, audit). Pure, deterministic.
     """
     pro_triggers = {"architect", "architecture",
                     "design", "tradeoff", "trade-off", "audit"}
@@ -1001,11 +998,10 @@ def _select_model(user_query: str) -> str:
 
 @mcp.tool()
 async def init_workspace(workspace_path: str) -> str:
-    """
-    Initializes a new workspace and registers it in the database.
-    Run this once before scan_workspace on a new project.
-    Idempotent — safe to re-call.
-
+    """Initialize a workspace via zerikai.db sqlite3 registry and ChromaDB.
+    Derives stable UUID via _derive_workspace_id, creates
+    .brain/contexts/<id>.md with placeholder brief. Idempotent —
+    safe to re-call, returns existing info if already registered.
     Args:
         workspace_path: Absolute path to the project root.
     """
@@ -1046,12 +1042,12 @@ async def save_to_memory(
     source_id: str | None = None,
     last_modified: str | None = None,
 ) -> str:
-    """
-    Save an architectural decision, fact, or technical note to persistent
-    vector memory (ChromaDB). For code files, entities are extracted via
-    tree-sitter; other formats use LLM summarisation. Use scan_workspace for
-    bulk ingestion.
-
+    """Save content to persistent vector memory in ChromaDB via tree-sitter or LLM.
+    Routes by file extension: supported extensions (.py, .js, .ts, .css,
+    .html, .md) use tree-sitter entity extraction; other formats fall
+    through to DeepSeek/Ollama LLM summarisation. Uses deterministic
+    md5 IDs so re-scans overwrite duplicates. Side effect: upserts to
+    ChromaDB collection and logs token usage to zerikai.db sqlite3.
     Args:
         content:   The raw content to remember.
         workspace: Workspace identifier (UUID, short UUID, or display name).
@@ -1280,15 +1276,12 @@ async def query_memory(
     use_cloud: bool | None = None,
     show_sources: bool = True,
 ) -> str:
-    """
-    Query the indexed codebase memory for this workspace. Use BEFORE reasoning
-    from priors on any code-location, architecture, or behavior question.
-    Returns a synthesized answer grounded in actual code with #file:line
-    citations and L2 distance scores.
-
-    Auto-routes short queries to Ollama, long/architectural to DeepSeek.
-    Override with use_cloud=True/False.
-
+    """Query ChromaDB codebase memory for this workspace with LLM synthesis.
+    Retrieves top FETCH_CAP results from ChromaDB, filters by
+    QUERY_DISTANCE_THRESHOLD (L2 distance), optionally re-ranks via
+    ENABLE_LEXICAL_RERANK, trims to top 5, then synthesizes answer
+    via DeepSeek or Ollama. Auto-routes via _should_use_cloud.
+    Returns #file:line citations with L2 distance scores.
     Args:
         user_query: The question or topic to look up.
         workspace:  Workspace identifier (UUID, short UUID, or display name).
@@ -1432,16 +1425,11 @@ async def query_memory(
 
 
 async def _query_deepseek(context: str, user_query: str, workspace_id: str) -> str:
-    """
-    Calls DeepSeek with a cache-optimised message structure.
-
-    Message layout (prefix stability is everything):
-      - system: fixed role instruction + stable project brief  ← CACHED
-      - user:   retrieved context + query                      ← varies per call
-
-    Keeping retrieved context in the USER turn (not the system turn) means
-    the system prefix never changes between calls for the same workspace,
-    maximising cache hits on the largest token block.
+    """Call DeepSeek via OpenAI client with cache-optimised message structure.
+    System message (fixed role + project brief from _build_system_message)
+    is stable across calls for KV cache prefix matching. Retrieved context
+    goes in the user turn. Logs cache hit/miss rates and tracks token
+    usage to zerikai.db. Side effect: writes to token_usage table.
     """
     system_message = _build_system_message(workspace_id)
     model = _select_model(user_query)
@@ -1483,7 +1471,11 @@ async def _query_deepseek(context: str, user_query: str, workspace_id: str) -> s
 
 
 async def _query_ollama(context: str, user_query: str, workspace_id: str) -> str:
-    """Local synthesis via Ollama — zero cost, zero latency on warm model."""
+    """Synthesize an answer via local Ollama using ol_client.generate.
+    Combines project brief from _load_project_context with retrieved
+    ChromaDB context. Runs on OLLAMA_MODEL — zero cost, zero network
+    latency. Pure read — no side effects beyond the API call.
+    """
     brief = _load_project_context(workspace_id)
     prompt = (
         f"Project Brief:\n{brief}\n\n"
@@ -1509,11 +1501,11 @@ async def list_memory(
     category: str | None = None,
     limit: int = 10,
 ) -> str:
-    """
-    Lists raw stored memory entries for this workspace.
-    Use this to audit what has been indexed, not to answer code questions
-    — use query_memory for that.
-
+    """List raw ChromaDB memory entries for this workspace.
+    Reads from the ChromaDB collection via collection.get with optional
+    category filter. Use for auditing what has been indexed — not for
+    answering code questions (use query_memory for that). Pure read,
+    no side effects.
     Args:
         workspace: Workspace identifier (UUID, short UUID, or display name).
         category:  Optional tag filter.
@@ -1550,9 +1542,11 @@ async def list_memory(
 
 @mcp.tool()
 async def list_workspaces() -> str:
-    """
-    Lists all known workspaces that have a project brief or stored memories.
-    Useful for verifying isolation and seeing what the server knows about.
+    """List all known workspaces from zerikai.db and ChromaDB.
+    Scans .brain/contexts/*.md brief files and ChromaDB memory_*
+    collections, cross-referencing workspace_registry for display
+    names. Reports brief and memory presence per workspace. Pure
+    read — no side effects.
     """
     try:
         context_dir = Path(DB_PATH) / "contexts"
@@ -1619,18 +1613,14 @@ async def list_workspaces() -> str:
 
 @mcp.tool()
 async def resolve_workspace(identifier: str) -> str:
-    """
-    Resolves a workspace identifier (UUID, short UUID, or display name) to its filesystem path.
-
-    This is a helper tool for agents that don't have filesystem context. Use `list_workspaces`
-    to see available workspaces, then use this tool to get the path needed for other operations.
-
+    """Resolve a workspace identifier to its filesystem path via zerikai.db sqlite3.
+    Three-tier routing: exact UUID → short UUID LIKE → display_name.
+    Query workspace_registry table. Helper for agents without filesystem
+    context. Pure read — no side effects.
     Args:
         identifier: Workspace UUID (full or first 8 chars), or display name
-
     Returns:
         The absolute filesystem path to use with other workspace tools
-
     Example:
         resolve_workspace("b2e5077c") → "d:/users/kike/projects/zerikai_memory"
         resolve_workspace("zerikai_memory") → "d:/users/kike/projects/zerikai_memory"
@@ -1691,10 +1681,10 @@ async def resolve_workspace(identifier: str) -> str:
 
 @mcp.tool()
 async def update_brief(workspace: str, new_content: str) -> str:
-    """
-    Replaces the project brief for a workspace with new markdown content.
-    Use after significant architectural changes or when the brief is stale.
-
+    """Replace the project brief in .brain/contexts/<id>.md with new markdown.
+    Resolves workspace via zerikai.db, then overwrites the brief file.
+    Use after significant architectural changes. Side effect: writes to
+    filesystem. No versioning — overwrites existing content.
     Args:
         workspace:   Workspace identifier (UUID, short UUID, or display name).
         new_content: The full markdown content for the new brief.
@@ -1717,11 +1707,10 @@ async def update_brief(workspace: str, new_content: str) -> str:
 
 @mcp.tool()
 async def get_brief(workspace: str) -> str:
-    """
-    Retrieves the current project brief for a workspace.
-    Use this FIRST on any new workspace to understand architecture,
-    stack, and conventions before querying or modifying anything.
-
+    """Retrieve the current project brief from .brain/contexts/<id>.md.
+    Resolves workspace via zerikai.db, then reads the brief file.
+    Returns guidance on init_workspace + scan_workspace if no brief
+    exists. Pure read — no side effects.
     Args:
         workspace: Workspace identifier (UUID, short UUID, or display name).
     """
@@ -1759,8 +1748,15 @@ async def _background_scan(
     progress: ScanProgress,
     force_refresh_brief: bool,
 ) -> None:
-    """Runs the full scan loop in background. Updates progress in _scans.
-    Errors are logged, not propagated. Brief synthesis is fire-and-forget."""
+    """Run the full 5-phase scan loop in background with asyncio concurrency.
+    Phase 1: Collect eligible files (respects .memignore, _TEXT_EXTENSIONS,
+    _MAX_FILE_BYTES). Phase 2: Concurrent processing via Semaphore(4) for
+    tree-sitter parsing + Semaphore(2) for LLM summarization. Phase 3:
+    Aggregate results and batch-upsert to ChromaDB via collection.upsert.
+    Phase 4: Purge stale memories (old_ids - scanned_ids). Phase 5:
+    Fire-and-forget brief synthesis via _background_brief_synthesis.
+    Errors are logged, not propagated. Updates ScanProgress in _scans.
+    """
     try:
         # ── Phase 1: Collect eligible files ──────────────────────────
         files: list[Path] = []
@@ -2006,17 +2002,12 @@ async def scan_workspace(
     category: str = "codebase",
     force_refresh_brief: bool = False,
 ) -> str:
-    """
-    Starts a background scan of the workspace. Returns immediately;
-    the scan continues in the background. Use scan_status() to track
-    progress and confirm completion.
-
-    Idempotent and Self-Cleaning:
-    - Overwrites existing files with deterministic IDs.
-    - Automatically purges memories from this category that are no longer
-      present or are now ignored.
-    - Re-scanning cancels any in-progress scan for this workspace.
-
+    """Start a background scan of the workspace via _background_scan task.
+    Returns immediately; use scan_status() to track progress. Respects
+    .memignore patterns and _TEXT_EXTENSIONS. Idempotent: overwrites
+    existing files with deterministic md5 IDs, automatically purges
+    stale memories. Re-scanning cancels any in-progress scan. Side
+    effect: launches asyncio.create_task for background processing.
     Args:
         workspace:  Workspace identifier (UUID, short UUID, or display name).
         category:   Tag applied to every saved memory (default 'codebase').
@@ -2087,9 +2078,10 @@ async def get_token_usage(
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> str:
-    """
-    Returns DeepSeek API token usage and cost statistics.
-
+    """Return DeepSeek API token usage and cost from zerikai.db sqlite3.
+    Queries token_usage table with optional workspace and date range
+    filters. Reports call count, token totals, cache hit rate, and
+    total cost in USD. Pure read — no side effects.
     Args:
         workspace:  Optional workspace identifier (UUID, short UUID, or display name). If None, shows all workspaces.
         start_date: Optional ISO date string (YYYY-MM-DD) for filtering. Defaults to beginning of time.
@@ -2178,9 +2170,9 @@ async def get_token_usage(
 
 @mcp.tool()
 async def get_cache_stats(workspace: str | None = None) -> str:
-    """
-    Shows cache hit/miss rates by operation type.
-
+    """Show DeepSeek cache hit/miss rates by operation from zerikai.db sqlite3.
+    Groups token_usage rows by operation, reporting call count, total
+    hits/misses, and average hit rate per operation type. Pure read.
     Args:
         workspace: Optional workspace identifier (UUID, short UUID, or display name). If None, shows all workspaces.
     """
@@ -2257,9 +2249,9 @@ async def get_cost_report(
     workspace: str | None = None,
     period: str = "all",
 ) -> str:
-    """
-    Generates cost breakdown by operation.
-
+    """Generate DeepSeek cost breakdown by operation from zerikai.db sqlite3.
+    Groups token_usage rows by operation and model. Supports period
+    filtering (today, week, month, all). Pure read — no side effects.
     Args:
         workspace: Optional workspace identifier (UUID, short UUID, or display name). If None, shows all workspaces.
         period:    Time period filter: "today", "week", "month", or "all" (default).
@@ -2366,10 +2358,10 @@ async def get_cost_report(
 
 @mcp.tool()
 async def purge_usage_data(before_date: str) -> str:
-    """
-    Deletes token tracking records before the specified date.
-    Use for cleaning up historical data. Cannot be undone.
-
+    """Delete token tracking records from zerikai.db sqlite3 before a date.
+    Validates date format, counts matching records, then executes DELETE
+    on token_usage table. Irreversible — cannot be undone. Side effect:
+    permanently deletes rows from the database.
     Args:
         before_date: ISO date string (YYYY-MM-DD). Records before this date will be deleted.
     """
@@ -2409,10 +2401,10 @@ async def purge_usage_data(before_date: str) -> str:
 
 @mcp.tool()
 async def debug_workspace_id(test_path: str) -> str:
-    """
-    Diagnostic tool: Shows what workspace ID would be generated from a given path.
-    Useful for debugging path normalization issues.
-
+    """Show what workspace ID _derive_workspace_id would generate from a path.
+    Normalizes the path (case, separators, trailing slashes) and displays
+    the resulting UUID and display name. Useful for debugging path
+    normalization issues. Pure read — no side effects.
     Args:
         test_path: The workspace path to test
     """
@@ -2445,13 +2437,11 @@ async def debug_workspace_id(test_path: str) -> str:
 
 @mcp.tool()
 async def merge_workspaces(source_workspace_id: str, target_workspace_id: str) -> str:
-    """
-    Merge all data from source workspace into target workspace.
-    This consolidates duplicate workspace IDs that were created due to path variations.
-
-    WARNING: This moves briefs, memory, and embeddings from source to target and then
-    deletes the source workspace. Cannot be undone.
-
+    """Merge ChromaDB collections from source into target workspace, then delete source.
+    Consolidates duplicate workspace IDs from path variations. Uses
+    collection.upsert to move data, then deletes source via
+    db_client.delete_collection. Irreversible — cannot be undone.
+    Side effect: permanently deletes source collection.
     Args:
         source_workspace_id: The workspace ID to merge FROM (will be deleted after merge)
         target_workspace_id: The workspace ID to merge INTO (will receive all data)
@@ -2520,11 +2510,10 @@ async def merge_workspaces(source_workspace_id: str, target_workspace_id: str) -
 
 @mcp.tool()
 async def scan_status(workspace: str) -> str:
-    """
-    Returns progress of a running or recently completed background scan.
-    Use after scan_workspace times out to check if indexing is done.
-    Reports scan progress AND brief synthesis status independently.
-
+    """Return progress of a running or completed background scan from _scans.
+    Reads ScanProgress for the workspace: files scanned/skipped/errored,
+    entities indexed, brief synthesis status, elapsed time, and ETA.
+    Pure read — no side effects.
     Args:
         workspace: Workspace identifier (UUID, short UUID, or display name).
     """

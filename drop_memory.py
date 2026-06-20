@@ -11,11 +11,10 @@ except ImportError as e:
     sys.exit(1)
 
 def resolve_workspace_identifier(identifier):
-    """Resolves a UUID or display name to a workspace UUID via the
-    zerikai.db sqlite3 registry. Tries UUID match first, falls back to
-    display name lookup. Guarantees (None, None) on not-found or database
-    error. Read-only — no side effects.
-
+    """Resolve a UUID or display name to a workspace UUID via zerikai.db sqlite3.
+    Tries UUID match first, falls back to display name lookup in
+    workspace_registry table. Guarantees (None, None) on not-found or
+    database error. Read-only — no side effects.
     Returns:
         (workspace_uuid, display_name) if found, else (None, None)
     """
@@ -52,10 +51,12 @@ def resolve_workspace_identifier(identifier):
         return (None, None)
 
 def drop_workspace_memory(identifier):
-    """Permanently deletes all workspace memory: ChromaDB vector collection,
-    .brain/contexts/<id>.md context file, and zerikai.db sqlite3 registry
-    entry. Best-effort 3-step teardown — each step skips gracefully if the
-    resource is already absent. Irreversible with no undo.
+    """Permanently delete all workspace memory: ChromaDB vectors, context file, sqlite3 registry.
+    Best-effort 3-step teardown: (1) delete ChromaDB collection via
+    db_client.delete_collection, (2) delete .brain/contexts/<id>.md
+    context file, (3) DELETE from workspace_registry in zerikai.db.
+    Each step skips gracefully if the resource is already absent.
+    Irreversible — no undo, no recovery.
     """
     workspace_uuid, display_name = resolve_workspace_identifier(identifier)
     
