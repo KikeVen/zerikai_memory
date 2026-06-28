@@ -41,13 +41,26 @@ class LanguageConfig:
     entity_query: str  # tree-sitter query to find functions/classes
 
 
-# Build Language objects from grammar packages
+# Python tree-sitter Language from tree-sitter-python grammar package.
+# Used by _extract_python for parsing .py files.
 PY_LANG = Language(tspython.language())
+# JavaScript tree-sitter Language from tree-sitter-javascript grammar.
+# Used by _extract_js_like for .js, .mjs, .cjs, .jsx files.
 JS_LANG = Language(tsjavascript.language())
+# TypeScript tree-sitter Language from tree-sitter-typescript grammar.
+# Used by _extract_js_like for .ts files.
 TS_LANG = Language(tstypescript.language_typescript())
+# TSX tree-sitter Language from tree-sitter-typescript TSX grammar.
+# Used by _extract_js_like for .tsx files.
 TSX_LANG = Language(tstypescript.language_tsx())
+# CSS tree-sitter Language from tree-sitter-css grammar package.
+# Used by _extract_css for .css files.
 CSS_LANG = Language(tscss.language())
+# HTML tree-sitter Language from tree-sitter-html grammar package.
+# Used by _extract_html for .html and .htm files.
 HTML_LANG = Language(tshtml.language())
+# Markdown tree-sitter Language from tree-sitter-markdown grammar.
+# Used by _extract_markdown for .md and .mdx files.
 MD_LANG = Language(tsmarkdown.language())
 
 # Shared entity query for JavaScript-like languages (JS, TS, TSX)
@@ -160,7 +173,7 @@ class CodeEntity:
     into ChromaDB. Pure dataclass — no methods, no side effects.
     """
 
-    entity_type: str  # "function", "method", "class"
+    entity_type: str  # "function", "method", "class", "constant", "markdown_section", "rule_set"
     name: str  # e.g. "scan_workspace"
     signature: str  # e.g. "scan_workspace(workspace: str, category: str = 'codebase') -> str"
     docstring: str | None  # The docstring or JSDoc comment
@@ -299,6 +312,16 @@ def _extract_python(
                 body = child.child_by_field_name("body")
                 if body:
                     _extract_from_body(body, class_entity.name)
+            elif parent_class is None and child.type == "expression_statement":
+                # Module-level UPPER_CASE constant assignments
+                for sub in child.named_children:
+                    if sub.type == "assignment":
+                        entity = _extract_python_constant(
+                            sub, source_bytes, lines, file_path, config.display_name
+                        )
+                        if entity:
+                            entities.append(entity)
+                        break
 
     # Top-level extraction
     _extract_from_body(root, None)
@@ -426,6 +449,57 @@ def _extract_python_class(
         end_lineno=node.end_point[0] + 1,
         parent_class=None,
         decorators=decorators,
+        params=[],
+        return_type=None,
+    )
+
+
+def _extract_python_constant(
+    node: Node,
+    source_bytes: bytes,
+    lines: list[str],
+    file_path: str,
+    language: str,
+) -> CodeEntity | None:
+    """Build a CodeEntity from a tree-sitter Python assignment node for
+    UPPER_CASE module-level constants. Routes by child_by_field_name:
+    left must be an uppercase identifier; right becomes the value text;
+    preceding # comments become the pseudo-docstring. Returns None if
+    the left side is not UPPER_CASE. Pure — deterministic, no side effects.
+    """
+    left = node.child_by_field_name("left")
+    if left is None or left.type != "identifier":
+        return None
+
+    name = left.text.decode("utf-8")
+    if not name.isupper():
+        return None
+
+    # Extract the value from the right-hand side
+    right = node.child_by_field_name("right")
+    value_text = right.text.decode("utf-8") if right else ""
+
+    # Use preceding comments as the docstring
+    docstring = _extract_preceding_comment(node, lines)
+
+    # Build signature and document text
+    signature = f"{name} = {value_text}"
+    text = signature
+    if docstring:
+        text += "\n" + _clean_docstring(docstring)
+
+    return CodeEntity(
+        entity_type="constant",
+        name=name,
+        signature=signature,
+        docstring=docstring,
+        document_text=text,
+        file_path=file_path,
+        language=language,
+        lineno=node.start_point[0] + 1,
+        end_lineno=node.end_point[0] + 1,
+        parent_class=None,
+        decorators=[],
         params=[],
         return_type=None,
     )
@@ -603,6 +677,12 @@ def _extract_js_like(
     root = tree.root_node
 
     def _walk(node: Node, parent_class: str | None) -> None:
+        """Walk tree-sitter CST children dispatching to extractors by node type.
+        Routes function_declaration to _extract_js_function, class_declaration
+        to _extract_js_class (with method recursion), method_definition to
+        _extract_js_function, and lexical_declaration to _extract_arrow_function
+        or _extract_js_constant. Recurse-s into non-terminal blocks.
+        Mutates entities list in-place, no return value."""
         for child in node.named_children:
             if child.type == "function_declaration":
                 entity = _extract_js_function(
@@ -627,7 +707,7 @@ def _extract_js_like(
                 if entity:
                     entities.append(entity)
             elif child.type == "lexical_declaration":
-                # const myFunc = () => { ... }
+                # const myFunc = () => { ... }  OR  const UPPER_CASE = ...
                 for decl_child in child.named_children:
                     if decl_child.type == "variable_declarator":
                         name_node = decl_child.child_by_field_name("name")
@@ -639,8 +719,26 @@ def _extract_js_like(
                             )
                             if entity:
                                 entities.append(entity)
-            # Recurse into nested blocks (but stop at function/class — they're handled above)
-            if child.type not in ("function_declaration", "class_declaration", "method_definition"):
+                        elif name_node:
+                            entity = _extract_js_constant(
+                                decl_child, source_bytes, lines, file_path,
+                                config.display_name
+                            )
+                            if entity:
+                                entities.append(entity)
+            elif child.type == "variable_declaration":
+                # var / let UPPER_CASE constants (non-const declarations)
+                for decl_child in child.named_children:
+                    if decl_child.type == "variable_declarator":
+                        entity = _extract_js_constant(
+                            decl_child, source_bytes, lines, file_path,
+                            config.display_name
+                        )
+                        if entity:
+                            entities.append(entity)
+            # Recurse into nested blocks (but stop at function/class/declarations — already handled above)
+            if child.type not in ("function_declaration", "class_declaration", "method_definition",
+                                  "lexical_declaration", "variable_declaration"):
                 _walk(child, parent_class)
 
     _walk(root, None)
@@ -834,6 +932,65 @@ def _extract_js_class(
     )
 
 
+def _extract_js_constant(
+    node: Node,
+    source_bytes: bytes,
+    lines: list[str],
+    file_path: str,
+    language: str,
+) -> CodeEntity | None:
+    """Build a CodeEntity from a tree-sitter JS/TS variable_declarator node
+    for UPPER_CASE constants. Routes by value length: scalars pass through;
+    multi-line objects/arrays over 5 lines are truncated with "[truncated]"
+    to avoid ChromaDB bloat. Preceding // comments become the pseudo-docstring
+    via _extract_preceding_comment. Pure — no side effects.
+    """
+    name_node = node.child_by_field_name("name")
+    if name_node is None:
+        return None
+
+    name = name_node.text.decode("utf-8")
+    if not name.isupper():
+        return None
+
+    # Extract the value from the right-hand side
+    value_node = node.child_by_field_name("value")
+    if value_node is None:
+        return None
+
+    value_text = value_node.text.decode("utf-8")
+
+    # Truncate multi-line values (objects, arrays, config blocks) to 5 lines
+    value_lines = value_text.split("\n")
+    if len(value_lines) > 5:
+        value_text = "\n".join(value_lines[:5]) + "\n... [truncated]"
+
+    # Use preceding // comments as the docstring
+    docstring = _extract_preceding_comment(node, lines)
+
+    # Build signature and document text
+    signature = f"{name} = {value_text}"
+    text = signature
+    if docstring:
+        text += "\n" + _clean_docstring(docstring)
+
+    return CodeEntity(
+        entity_type="constant",
+        name=name,
+        signature=signature,
+        docstring=docstring,
+        document_text=text,
+        file_path=file_path,
+        language=language,
+        lineno=node.start_point[0] + 1,
+        end_lineno=node.end_point[0] + 1,
+        parent_class=None,
+        decorators=[],
+        params=[],
+        return_type=None,
+    )
+
+
 def _extract_jsdoc(node: Node, lines: list[str]) -> str | None:
     """Extract JSDoc comment preceding a tree-sitter JS/TS function or class.
     Walks backwards from the node's start line through /** ... */ block
@@ -960,6 +1117,9 @@ def _extract_css(
     root = tree.root_node
 
     def _walk(node: Node):
+        """Walk tree-sitter-css CST for rule_set nodes, extracting each as a
+        CodeEntity with its selector text. Skips non-rule_set children by
+        recursing deeper. Mutates entities list in-place. Pure, deterministic."""
         for child in node.named_children:
             if child.type == "rule_set":
                 selectors = ""
@@ -1009,6 +1169,11 @@ def _extract_html(
     semantic_tags = {"main", "header", "footer", "section", "article", "nav", "aside"}
 
     def _walk(node: Node):
+        """Walk tree-sitter-html CST for semantic elements and script/style blocks.
+        Extracts elements with semantic tags (main, header, section, article, nav,
+        aside, footer), id-bearing elements, and script/style containers. Captures
+        preceding HTML comment nodes as docstrings. Recurse-s into children.
+        Mutates entities list in-place. Uses tree-sitter-html grammar."""
         pending_comment = None
         for child in node.children:
             # Collect HTML comments as docstrings for the next element
@@ -1162,6 +1327,46 @@ def _extract_markdown(
             return_type=None,
         ))
 
+    def _extract_checklists(
+        section_text: str,
+        breadcrumb: str,
+        heading: str,
+        base_lineno: int,
+    ) -> None:
+        """Scan a section's markdown text with re (regex) for checkbox items,
+        emitting each as a markdown_checklist entity. Routes by marker:
+        [ ] → pending, [x]/[X] → completed. Groups items under their
+        nearest heading via breadcrumb context. Mutates entities list
+        in-place — deterministic, no other side effects.
+        """
+        pattern = re.compile(r'^[\s]*[-*+]\s+\[([ xX])\]\s+(.+)$', re.MULTILINE)
+        for match in pattern.finditer(section_text):
+            status_char = match.group(1)
+            item_text = match.group(2).strip()
+            completed = status_char.lower() == "x"
+            status_label = "[x]" if completed else "[ ]"
+
+            # Calculate approximate line number within the file
+            preceding_newlines = section_text[:match.start()].count("\n")
+            item_lineno = base_lineno + preceding_newlines
+
+            signature = f"{status_label} {item_text}"
+            document_text = (
+                f"Checklist item under '{heading}'\n"
+                f"Status: {'completed' if completed else 'pending'}\n"
+                f"{status_label} {item_text}"
+            )
+            name = f"{breadcrumb} > {item_text[:80]}"
+
+            _emit(
+                entity_type="markdown_checklist",
+                name=name,
+                signature=signature,
+                document_text=document_text,
+                start_lineno=item_lineno,
+                end_lineno=item_lineno,
+            )
+
     # -------------------------------------------------------------------
     # Section walker — emits each section as a whole entity
     # -------------------------------------------------------------------
@@ -1197,13 +1402,21 @@ def _extract_markdown(
             # Child sections are included in this text — that's intentional:
             # the parent provides broad context; child entities provide
             # focused precision.  Both are useful for vector search.
+            section_text = child.text.decode("utf-8")
+            section_start = child.start_point[0] + 1
+            section_end = child.end_point[0] + 1
             _emit(
                 entity_type="markdown_section",
                 name=breadcrumb,
                 signature=sig,
-                document_text=child.text.decode("utf-8"),
-                start_lineno=child.start_point[0] + 1,
-                end_lineno=child.end_point[0] + 1,
+                document_text=section_text,
+                start_lineno=section_start,
+                end_lineno=section_end,
+            )
+
+            # Extract checkbox items as individual searchable entities
+            _extract_checklists(
+                section_text, breadcrumb, heading_text, section_start
             )
 
             # Recurse into nested child sections
@@ -1271,3 +1484,37 @@ def _clean_docstring(docstring: str) -> str:
 
     result = " ".join(meaningful)
     return result
+
+
+def _extract_preceding_comment(node: Node, lines: list[str]) -> str | None:
+    """Walk backwards from a tree-sitter node collecting contiguous # (Python)
+    or // (JS/TS) comment lines, skipping blanks between them. Stops at the
+    first non-comment line. Returns joined text with markers stripped, or
+    None if no comments found. Pure — deterministic, no side effects.
+    """
+    start_line = node.start_point[0]
+    if start_line == 0:
+        return None
+
+    comment_lines: list[str] = []
+    prev_line = start_line - 1
+
+    while prev_line >= 0:
+        stripped = lines[prev_line].strip()
+        if not stripped:
+            # Blank line — keep going (common between comment blocks and code)
+            prev_line -= 1
+            continue
+        if stripped.startswith("#") or stripped.startswith("//"):
+            # Strip the comment marker(s) and leading whitespace from the text
+            if stripped.startswith("#"):
+                text = stripped.lstrip("#").strip()
+            else:
+                text = stripped.lstrip("/").strip()
+            comment_lines.insert(0, text)
+            prev_line -= 1
+        else:
+            # Non-comment line — stop
+            break
+
+    return "\n".join(comment_lines) if comment_lines else None

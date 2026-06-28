@@ -16,24 +16,32 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Memory Mode controls which LLM is used for operations:
-# - "cloud": Use DeepSeek for all operations (scan, brief, queries)
-# - "hybrid": Use Ollama for file scanning, DeepSeek for briefs and escalated queries
-# - "local": Use Ollama for everything (free, but lower quality briefs)
+# Controls which LLM is used for memory operations: "cloud" uses DeepSeek
+# for everything, "hybrid" uses Ollama for scanning with DeepSeek for
+# briefs/queries, "local" uses Ollama only. Reads from environment with
+# fallback to "cloud" when not set.
 MEMORY_MODE = os.getenv("MEMORY_MODE", "cloud")
 
-# Aliases used by main.py
+# DEFAULT_MEMORY_MODE mirrors MEMORY_MODE env var. Controls whether
+# query_memory auto-routes to DeepSeek cloud. Read-only after import.
 DEFAULT_MEMORY_MODE = MEMORY_MODE
+# SYNTHESIZE_WITH_CLOUD gates brief synthesis to DeepSeek when True.
+# True for cloud and hybrid modes; hybrid scanning still uses Ollama.
 SYNTHESIZE_WITH_CLOUD = MEMORY_MODE in ("cloud", "hybrid")
 
-# DeepSeek — OpenAI-compatible
+# DeepSeek — OpenAI-compatible API key. Reads from DEEPSEEK_API_KEY env
+# var. Required for cloud synthesis via ds_client.
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+# DeepSeek OpenAI-compatible REST API endpoint. Points to
+# https://api.deepseek.com. Used by ds_client for all cloud calls.
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 
 # Use v4-flash for general synthesis (fast, cheap, good cache hit rate).
-# Swap to deepseek-v4-pro for maximum reasoning on complex architectural queries.
-# NOTE: deepseek-chat / deepseek-reasoner are legacy aliases retiring July 24 2026.
+# NOTE: deepseek-chat is a legacy alias retiring July 24 2026.
 DEEPSEEK_MODEL_FAST = "deepseek-v4-flash"
+# Use deepseek-v4-pro for maximum reasoning on complex architectural
+# queries (architecture, design, tradeoffs). 75% off until May 31 2026.
+# NOTE: deepseek-reasoner is a legacy alias retiring July 24 2026.
 DEEPSEEK_MODEL_PRO = "deepseek-v4-pro"
 
 # Enable deepseek-v4-pro for complex queries (architecture, design, tradeoffs)
@@ -42,12 +50,15 @@ ENABLE_DEEPSEEK_PRO = os.getenv(
     "ENABLE_DEEPSEEK_PRO", "false").lower() == "true"
 
 # Local Ollama model for summarisation (always free, always local)
-OLLAMA_MODEL = "llama3.2:latest"
+OLLAMA_MODEL = "mistral:7b"  # mistral:7b - llama3.2:latest
 _host = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
 if _host == "0.0.0.0":
     _host = "http://127.0.0.1:11434"
 elif not _host.startswith("http"):
     _host = f"http://{_host}:11434"
+# Normalised Ollama server URL. Handles bare hostnames (adds http://
+# and :11434), maps 0.0.0.0 to 127.0.0.1 for local-only binding.
+# Falls back to http://127.0.0.1:11434 when OLLAMA_HOST is unset.
 OLLAMA_HOST = _host
 
 # Storage root — all workspace data lives here
@@ -59,6 +70,8 @@ DB_PATH = Path(__file__).parent / ".brain"
 # zerikai.db stores token tracking, workspace registry, and other persistent state
 ENABLE_TOKEN_TRACKING = os.getenv(
     "ENABLE_TOKEN_TRACKING", "true").lower() == "true"
+# Path to the persistent sqlite3 database for token tracking, workspace
+# registry, and cost reporting. Created on first _init_db() call.
 ZERIKAI_DB = DB_PATH / "zerikai.db"
 
 # DeepSeek pricing (USD per 1M tokens) - verified May 1, 2026
@@ -111,6 +124,9 @@ SKIP_BARE_FILES = set(ast.literal_eval(os.getenv("SKIP_BARE_FILES", "[]")))
 # Pure reorder — nothing below threshold is dropped.
 ENABLE_LEXICAL_RERANK = os.getenv(
     "ENABLE_LEXICAL_RERANK", "false").lower() == "true"
+# Weight per keyword-match hit in the lexical re-rank formula.
+# Default 0.05 — small enough to nudge within the 1/dist spread
+# without overriding semantic distance. Reads from env.
 LEXICAL_RERANK_WEIGHT = float(os.getenv("LEXICAL_RERANK_WEIGHT", "0.05"))
 
 # Maximum number of documents to fetch from ChromaDB before applying lexical reranking.

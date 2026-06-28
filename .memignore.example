@@ -6,6 +6,12 @@ venv/
 .brain/vector_db/
 docs/
 scripts/
+embedding-docstring/
+auxiliary_scripts/
+agent_rules/
+
+README.md
+LICENSE
 
 .gitignore
 .flake8

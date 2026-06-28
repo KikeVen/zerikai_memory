@@ -8,6 +8,13 @@ __ignore/
 docs/
 scripts/
 
+agent_rules/
+embedding-docstring/
+auxiliary_scripts/
+
+<!-- README.md -->
+documentation/README_FULL.md
+
 .gitignore
 .flake8
 

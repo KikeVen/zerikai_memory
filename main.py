@@ -386,6 +386,9 @@ def _resolve_workspace(identifier: str) -> tuple[str, str, str]:
         raise ValueError(f"Could not resolve workspace '{identifier}': {exc}")
 
 
+# Placeholder string inserted into .brain/contexts/<id>.md after init_workspace.
+# Detected by _background_scan to trigger first-time brief synthesis via
+# DeepSeek or Ollama after scan completes. Replaced by the generated brief.
 UNINITIALIZED_MARKER = "<!-- ZERIKAI_PENDING_SYNTHESIS -->"
 
 
@@ -557,15 +560,17 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
     sections = [
         {
             "heading": "## Overview",
-            "query": "project purpose main features domain application what does system do readme",
+            "query": "What is this project's purpose, main features, external services it integrates with, who it is designed for, and what does the README say about the project overview?",
             "prompt_template": (
                 f"You are a senior software architect analyzing the `{display_name}` project. "
                 "Based on the following file summaries from the codebase, write the Overview section. "
                 "Be concise and direct. Do not preface your answer with any introductory sentence.\n\n"
-                f"Use this format (use the actual project name, not a placeholder):\n"
+                "Use this format:\n"
                 f"`{display_name}` is a [type] system designed to [purpose]. "
-                "It integrates with [external services] to [key function]. "
-                "[One sentence on who it is for or its domain.]\n\n"
+                "State the key technologies used (parsing, storage, LLMs, protocols). "
+                "Name the external services or APIs it integrates with and their role. "
+                "State who it is designed for and in what context it operates.\n\n"
+                f"Do not add new sections or headings — this is one continuous paragraph.\n\n"
                 "=== CODEBASE SUMMARIES ===\n"
                 "{context}\n\n"
                 "Write the Overview section:"
@@ -573,20 +578,19 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
         },
         {
             "heading": "## Technical Stack",
-            "query": "dependencies requirements packages frameworks libraries database docker deployment python javascript",
+            "query": "What are the primary dependencies, libraries, frameworks, and databases used in this project? List the language, frameworks, data storage, interfaces (API, CLI, web, MCP), and key libraries.",
             "prompt_template": (
                 f"You are a senior software architect analyzing the `{display_name}` project. "
                 "Based on the following file summaries from the codebase, list the Technical Stack. "
                 "Be concise and direct. Start directly with 'Listing only primary libraries, max 5:' — no other introductory text.\n\n"
                 "IMPORTANT: Only list the 5-10 most important PRIMARY dependencies. "
-                "Omit transitive dependencies (e.g., certifi, charset-normalizer, idna, etc.), "
-                "low-level utilities, and standard library modules. "
-                "Focus on frameworks, databases, and major integrations that define the project's architecture.\n\n"
+                "Omit transitive dependencies, low-level utilities, and standard library modules. "
+                "Focus on frameworks, databases, APIs, and major integrations that define the project's architecture.\n\n"
                 "Use this format:\n\n"
-                "* **Backend:** [Language/Framework]\n"
-                "* **Database:** [Database Technology]\n"
-                "* **API Integration:** [External services and what they do]\n"
-                "* **Frontend:** [UI Framework/Technology]\n"
+                "* **Language:** [Python, JavaScript, TypeScript, etc.]\n"
+                "* **Frameworks:** [Server, web, MCP frameworks — omit if none]\n"
+                "* **Data Storage:** [Database, vector store, file-based, etc.]\n"
+                "* **Interfaces:** [API, CLI, web, MCP — omit any that do not apply]\n"
                 "* **Libraries:**\n"
                 "  * [Category]: [Library names]\n\n"
                 "=== CODEBASE SUMMARIES ===\n"
@@ -596,18 +600,19 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
         },
         {
             "heading": "## Core Architecture",
-            "query": "architecture components structure models views api routes data flow patterns authentication services",
+            "query": "How is this project structured? Describe the architectural layers — entry points, processing pipeline, data storage, code indexing, and LLM integration.",
             "full_context": True,
             "fetch_cap": 25,
             "prompt_template": (
                 f"You are a senior software architect analyzing the `{display_name}` project. "
                 "Based on the following file summaries from the codebase, describe the Core Architecture. "
                 "Be concise and direct. Start directly with 'The application consists of the following layers:' — no other introductory text.\n\n"
-                "Use this format:\n"
+                "Use this format:\n\n"
                 "The application consists of the following layers:\n\n"
-                "1. **Frontend:** [Technology and what it handles]\n"
-                "2. **Backend:** [Framework and what it handles]\n"
-                "3. **[Other Layer]:** [Technology and what it handles]\n\n"
+                "1. **[Layer Name]:** [Technology and what it handles]\n"
+                "2. **[Layer Name]:** [Technology and what it handles]\n\n"
+                "Name each layer based on what you find in the summaries. "
+                "Omit any layer that does not exist in the codebase.\n\n"
                 "=== CODEBASE SUMMARIES ===\n"
                 "{context}\n\n"
                 "Describe the Core Architecture:"
@@ -615,17 +620,20 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
         },
         {
             "heading": "## Primary Conventions",
-            "query": "code organization conventions standards tests testing naming structure folders config style error handling",
+            "query": "What conventions, patterns, and standards does this project follow? Describe the code organization, naming conventions, error handling, docstring style, file ignore rules, and any other conventions evident in the codebase.",
             "prompt_template": (
                 f"You are a senior software architect analyzing the `{display_name}` project. "
                 "Based on the following file summaries from the codebase, list the Primary Conventions. "
                 "Be concise and direct. Start directly with the first bullet point — no introductory text.\n\n"
                 "Use this format for any sections that apply:\n"
                 "* **Code Organization:** [How code is structured into directories/modules]\n"
-                "* **Docstring Style:** [Convention used, e.g. Google/NumPy/Sphinx, or embedding-docstring skill]\n"
-                "* **Error Handling:** [Method and logging mechanism]\n"
+                "* **Naming Conventions:** [Prefix patterns like _private, UPPER_CASE constants]\n"
+                "* **File Ignore Rules:** [How .memignore or similar patterns are handled]\n"
+                "* **Docstring Style:** [Convention used]\n"
+                "* **Error Handling & Logging:** [Method and mechanism]\n"
                 "* **Database Schema:** [Where defined and how updated]\n\n"
-                "Omit any section that does not apply to this project. Do not add any other sections.\n\n"
+                "Omit any section that does not apply. Only include categories evident "
+                "in the codebase. Do not add any other sections.\n\n"
                 "=== CODEBASE SUMMARIES ===\n"
                 "{context}\n\n"
                 "List the Primary Conventions:"
@@ -633,14 +641,14 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
         },
         {
             "heading": "## Purpose",
-            "query": "purpose goals objectives why business problem solution users target audience",
+            "query": "What problem does this project solve? What is its goal, who is it for, and what technologies does it use to achieve that goal?",
             "prompt_template": (
                 f"You are a senior software architect analyzing the `{display_name}` project. "
                 "Based on the following file summaries from the codebase, explain the Purpose. "
                 "Be concise and direct. Do not preface your answer with any introductory sentence.\n\n"
-                f"Use this format (replace [Project Name] with the actual name inferred from the codebase):\n"
-                f"`{display_name}` aims to [goal] using [tech summary] to reduce [user burden] "
-                "and evaluate performance against [key objectives].\n\n"
+                "Use this format:\n"
+                f"`{display_name}` aims to [goal] using [technologies] to solve [problem]. "
+                "It is designed for [audience].\n\n"
                 "=== CODEBASE SUMMARIES ===\n"
                 "{context}\n\n"
                 "Explain the Purpose:"
@@ -648,7 +656,7 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
         },
         {
             "heading": "## Key Files & Directories",
-            "query": "important files main entry point settings configuration models views routes directory structure",
+            "query": "What are the key files and directories in this project? List the entry point, configuration, core modules, documentation, and storage directories with their purposes.",
             "prompt_template": (
                 f"You are a senior software architect analyzing the `{display_name}` project. "
                 "Based on the following file summaries from the codebase, identify Key Files & Directories. "
@@ -656,8 +664,8 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
                 "Use this format:\n"
                 "* **`path/to/file.ext`** - [Brief purpose]\n"
                 "* **`directory/`** - [What this directory contains]\n\n"
-                "Focus on entry points, configuration files, core models, main routers, and key directories. "
-                "Omit test files and generic items.\n\n"
+                "Focus on entry points, configuration, core modules, key directories, "
+                "and project documentation. Omit test files, CI configs, and generic items.\n\n"
                 "=== CODEBASE SUMMARIES ===\n"
                 "{context}\n\n"
                 "List Key Files & Directories:"
@@ -665,16 +673,18 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
         },
         {
             "heading": "## Development & Testing",
-            "query": "setup install dependencies run server test pytest commands docker development environment local",
+            "query": "How do you set up, run, test, and deploy this project? What are the installation steps, startup commands, test framework, and build or deployment process?",
             "prompt_template": (
                 f"You are a senior software architect analyzing the `{display_name}` project. "
                 "Based on the following file summaries from the codebase, describe Development & Testing setup. "
                 "Be concise and direct. Start directly with the first bullet point — no introductory text.\n\n"
                 "Use this format:\n"
                 "* **Setup:** [How to install dependencies and prepare environment]\n"
-                "* **Running Locally:** [Command to start the development server]\n"
-                "* **Testing:** [Test framework and command to run tests]\n"
-                "* **Build/Deploy:** [Build process or containerization if present]\n\n"
+                "* **Running Locally:** [Command or method to start the project]\n"
+                "* **Testing:** [Test framework and command to run tests — omit if none]\n"
+                "* **Build/Deploy:** [Build process or containerization — omit if none]\n\n"
+                "If a category has no information in the summaries, omit it. "
+                "Do not fabricate details.\n\n"
                 "=== CODEBASE SUMMARIES ===\n"
                 "{context}\n\n"
                 "Describe Development & Testing:"
@@ -684,7 +694,7 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
             "full_context": True,
             "fetch_cap": 25,
             "heading": "## Data Flow & Request Lifecycle",
-            "query": "request response flow authentication lifecycle pipeline process middleware routing data flow",
+            "query": "How does a request flow through this project? Describe the entry point, processing pipeline, data access, response generation, and authentication if present.",
             "prompt_template": (
                 f"You are a senior software architect analyzing the `{display_name}` project. "
                 "Based on the following file summaries from the codebase, describe the Data Flow & Request Lifecycle. "
@@ -695,7 +705,8 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
                 "2. **[Processing Layer]:** [How request is processed]\n"
                 "3. **[Data Layer]:** [How data is accessed/modified]\n"
                 "4. **[Response]:** [How response is generated]\n\n"
-                "Include authentication flow if present.\n\n"
+                "Include authentication flow only if present in the summaries. "
+                "Do not fabricate details.\n\n"
                 "=== CODEBASE SUMMARIES ===\n"
                 "{context}\n\n"
                 "Describe Data Flow & Request Lifecycle:"
@@ -703,7 +714,7 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
         },
         {
             "heading": "## Future Roadmap",
-            "query": "todo future roadmap planned features upcoming improvements milestones backlog scaling roadmap",
+            "query": "What planned features, TODOs, FIXMEs, roadmap items, or future improvements are documented in this codebase?",
             "full_context": True,
             "fetch_cap": 30,
             "prompt_template": (
@@ -838,6 +849,10 @@ def _build_system_message(workspace_id: str) -> str:
         "the developer's query accurately and concisely. "
         "Prioritise specifics over generalities. "
         "Do not repeat the retrieved context verbatim.\n\n"
+        "=== STRICT ATTRIBUTION RULES ===\n"
+        "1. GROUNDING: Base your answer EXCLUSIVELY on the provided context. If the information is not present, say 'I don't have this information'.\n"
+        "2. SIGNATURE TRUTH: When explaining a function or class, use only the signature and logic provided in its specific context block. Do not attribute logic from helper functions (e.g., _extract_*) to the top-level caller unless explicitly stated in that caller's block.\n"
+        "3. NO HALLUCINATION: Do not invent parameters, return types, or implementation details. Verify every claim against the context.\n\n"
         "=== PROJECT BRIEF ===\n"
     )
     project_context = _load_project_context(workspace_id)
@@ -1184,13 +1199,18 @@ async def save_to_memory(
         elif src.endswith(".md"):
             # Heading structure only — skip prose
             index_prompt = (
-                f"Extract only the heading lines from the Markdown file below. "
-                f"Headings are lines starting with #, ##, ###, or ####.\n\n"
+                f"Extract the heading structure AND checklist items from the Markdown file below. "
+                f"Headings are lines starting with #, ##, ###, or ####. "
+                f"Extract all checkbox items, preserving their completion status "
+                f"[ ] or [x] and the accompanying text. "
+                f"Group items under their nearest preceding heading.\n\n"
                 f"Respond ONLY in this exact format — no prose, no explanation:\n\n"
                 f"description: <one sentence in plain English describing what this document covers>\n"
                 f"file: <filename>\n"
                 f"headings:\n"
-                f"  - <heading line>\n\n"
+                f"  - <heading line>\n"
+                f"checklists:\n"
+                f"  - [x] <item text> (under: <heading>)\n\n"
                 f"Source file: {source_id}\n\n"
                 f"{content}"
             )
@@ -1353,6 +1373,10 @@ async def query_memory(
                     query_terms = set(user_query.lower().split())
 
                     def lexical_score(item):
+                        """Score a ChromaDB result by semantic distance + keyword overlap.
+                        Used as sort key for ENABLE_LEXICAL_RERANK. Computes
+                        (1/dist) + (keyword_hits * LEXICAL_RERANK_WEIGHT) for
+                        each (doc, meta, dist) tuple. Pure, deterministic."""
                         doc, meta, dist = item
                         name = (meta or {}).get("name", "").lower()
                         text = doc.lower()
@@ -1478,10 +1502,15 @@ async def _query_ollama(context: str, user_query: str, workspace_id: str) -> str
     """
     brief = _load_project_context(workspace_id)
     prompt = (
+        "You are a project memory assistant. Answer concisely and technically.\n\n"
+        "=== STRICT ATTRIBUTION RULES ===\n"
+        "1. GROUNDING: Base your answer EXCLUSIVELY on the provided context. If information is not present, say 'I don't have this information'.\n"
+        "2. SIGNATURE TRUTH: When explaining a function/class, use only the signature and logic provided in its specific context block. Do not attribute logic from helpers (e.g. _extract_*) to the top-level caller unless explicitly stated.\n"
+        "3. NO HALLUCINATION: Do not invent details; verify every claim against the context.\n\n"
         f"Project Brief:\n{brief}\n\n"
         f"Retrieved Context:\n{context}\n\n"
         f"Query: {user_query}\n\n"
-        "Answer concisely and technically:"
+        "Final Synthesis (Answer):"
     )
     result = await asyncio.to_thread(
         ol_client.generate,
@@ -1797,7 +1826,11 @@ async def _background_scan(
         scanned_ids: set[str] = set()
 
         async def process_file(fp: Path) -> WorkerResult:
-            """Process one file: tree-sitter or chunk+LLM. Returns result."""
+            """Process one file: tree-sitter entity extraction or chunk+LLM summarization.
+            Routes by file extension: supported extensions go through tree-sitter
+            (_extract_python/_extract_js_like), others via chunking + DeepSeek/Ollama.
+            Upserts entity batches directly to ChromaDB collection via batch lists.
+            Side effect: calls save_to_memory for chunked files, populates scanned_ids."""
             rel_path = fp.relative_to(workspace_root).as_posix()
             last_modified_ts = datetime.fromtimestamp(
                 fp.stat().st_mtime, timezone.utc
@@ -1900,6 +1933,9 @@ async def _background_scan(
 
         # Run workers with semaphore
         async def worker(fp: Path) -> WorkerResult:
+            """Semaphore-guarded wrapper around process_file for concurrent scanning.
+            Limits concurrent file processing to _parse_sem (4). Forwards all
+            results unchanged. Pure passthrough — no side effects."""
             async with _parse_sem:
                 return await process_file(fp)
 
