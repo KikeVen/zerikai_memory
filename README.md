@@ -284,7 +284,7 @@ You never run these commands directly; your active AI agent executes them on you
 | `scan_status` | Returns progress of a running or recently completed background scan: files scanned, entities indexed, errors, elapsed time, brief status. |
 | `save_to_memory` | Manually saves an architectural decision, fact, or technical note with an optional category tag. |
 | `list_memory` | Lists stored memories for a workspace, optionally filtered by category. |
-| `query_memory` | Retrieves relevant context via vector search and synthesises an answer via Ollama or DeepSeek (auto-routed). Returns inline `#file:line (distance)` citations — plain text that renders in every IDE, clickable in VS Code Copilot. Defaults to on; set `show_sources=False` for clean output. |
+| `query_memory` | Retrieves relevant context via vector search and synthesises an answer via Ollama or DeepSeek (auto-routed). Returns a structured JSON result (parsed by the IDE agent) with clickable file links and relevance scores. |
 | `get_brief` | Retrieves the current project brief from `.brain/contexts/`. |
 | `update_brief` | Manually updates the markdown content of a project brief. |
 

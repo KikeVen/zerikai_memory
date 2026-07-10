@@ -29,6 +29,7 @@ from config import (
     DEEPSEEK_MODEL_PRO,
     DEEPSEEK_PRICING,
     DEFAULT_MEMORY_MODE,
+    ENABLE_DEEPSEEK_PRO,
     ENABLE_LEXICAL_RERANK,
     ENABLE_TOKEN_TRACKING,
     FETCH_CAP,
@@ -836,6 +837,16 @@ def _load_project_context(workspace_id: str) -> str:
     )
 
 
+def _get_score_tuple(evidence_item: dict) -> tuple[float | None, str]:
+    """Return score and score label from evidence item."""
+    score = evidence_item.get("rerank_score")
+    score_label = "rerank"
+    if score is None:
+        score = evidence_item.get("l2_distance")
+        score_label = "L2"
+    return score, score_label
+
+
 def _build_system_message(workspace_id: str) -> str:
     """Assemble the DeepSeek system message with tiktoken for KV cache optimisation.
     Concatenates a fixed role instruction with the per-workspace project
@@ -852,7 +863,11 @@ def _build_system_message(workspace_id: str) -> str:
         "=== STRICT ATTRIBUTION RULES ===\n"
         "1. GROUNDING: Base your answer EXCLUSIVELY on the provided context. If the information is not present, say 'I don't have this information'.\n"
         "2. SIGNATURE TRUTH: When explaining a function or class, use only the signature and logic provided in its specific context block. Do not attribute logic from helper functions (e.g., _extract_*) to the top-level caller unless explicitly stated in that caller's block.\n"
-        "3. NO HALLUCINATION: Do not invent parameters, return types, or implementation details. Verify every claim against the context.\n\n"
+        "3. NO HALLUCINATION: Do not invent parameters, return types, or implementation details. Verify every claim against the context.\n"
+        "4. INLINE CITATIONS: When you state a fact drawn from a specific source, cite it inline immediately "
+        "after the claim using the format: #file:line | score L2 or rerank\n"
+        "   Example: \"The brief is loaded via _load_project_context (#main.py:810 | 0.72 L2).\"\n"
+        "   Only cite sources that are present in the provided context. Do not fabricate file paths, line numbers, or scores.\n\n"
         "=== PROJECT BRIEF ===\n"
     )
     project_context = _load_project_context(workspace_id)
@@ -995,8 +1010,12 @@ def _should_use_cloud(user_query: str, use_cloud: bool | None) -> bool:
 def _select_model(user_query: str) -> str:
     """Select DEEPSEEK_MODEL_FAST vs DEEPSEEK_MODEL_PRO based on query keywords.
     Pro is reserved for queries containing architectural trigger words
-    (architect, design, tradeoff, audit). Pure, deterministic.
+    (architect, design, tradeoff, audit). If ENABLE_DEEPSEEK_PRO is False
+    in .env, always falls back to FAST. Pure, deterministic.
     """
+    if not ENABLE_DEEPSEEK_PRO:
+        return DEEPSEEK_MODEL_FAST
+
     pro_triggers = {"architect", "architecture",
                     "design", "tradeoff", "trade-off", "audit"}
     if any(w in pro_triggers for w in user_query.lower().split()):
@@ -1294,23 +1313,23 @@ async def query_memory(
     workspace: str,
     category: str | None = None,
     use_cloud: bool | None = None,
-    show_sources: bool = True,
 ) -> str:
     """Query ChromaDB codebase memory for this workspace with LLM synthesis.
     Retrieves top FETCH_CAP results from ChromaDB, filters by
     QUERY_DISTANCE_THRESHOLD (L2 distance), optionally re-ranks via
     ENABLE_LEXICAL_RERANK, trims to top 5, then synthesizes answer
     via DeepSeek or Ollama. Auto-routes via _should_use_cloud.
-    Returns #file:line citations with L2 distance scores.
+    Returns a JSON string with 'answer' and 'evidence' keys.
     Args:
         user_query: The question or topic to look up.
         workspace:  Workspace identifier (UUID, short UUID, or display name).
         category:   Optional filter to scope results by tag.
         use_cloud:  True = force DeepSeek. False = force Ollama.
                     None = auto-route (recommended).
-        show_sources: If True (default), appends a pre-formatted markdown
-                      sources table after the answer.
     """
+    if not user_query or not user_query.strip():
+        return "Query cannot be empty. What would you like to know about the codebase?"
+
     try:
         workspace_id, display_name, workspace_path = _resolve_workspace(
             workspace)
@@ -1340,7 +1359,7 @@ async def query_memory(
             log.info("query_memory | no documents retrieved for workspace=%s query=%r",
                      workspace_id, user_query)
             context = "No specific code snippets found in memory."
-            sources = []
+            relevant_for_evidence = []
         else:
             # Distance threshold — ChromaDB returns L2 distances; filter out results
             # that are too dissimilar. Tune via QUERY_DISTANCE_THRESHOLD in .env.
@@ -1358,7 +1377,7 @@ async def query_memory(
                     best, workspace_id, user_query,
                 )
                 context = "No specific code snippets found below distance threshold."
-                sources = []
+                relevant_for_evidence = []
             else:
                 log.info(
                     "query_memory | %d/%d results passed threshold for workspace=%s",
@@ -1371,35 +1390,39 @@ async def query_memory(
                 # genuinely closer semantic results.
                 if ENABLE_LEXICAL_RERANK:
                     query_terms = set(user_query.lower().split())
-
-                    def lexical_score(item):
-                        """Score a ChromaDB result by semantic distance + keyword overlap.
-                        Used as sort key for ENABLE_LEXICAL_RERANK. Computes
-                        (1/dist) + (keyword_hits * LEXICAL_RERANK_WEIGHT) for
-                        each (doc, meta, dist) tuple. Pure, deterministic."""
-                        doc, meta, dist = item
+                    
+                    reranked_relevant = []
+                    for doc, meta, dist in relevant:
                         name = (meta or {}).get("name", "").lower()
                         text = doc.lower()
                         hits = sum(
                             1 for t in query_terms if t in name or t in text)
-                        return (1 / dist) + (hits * LEXICAL_RERANK_WEIGHT)
+                        # Guard against divide-by-zero for exact vector matches (dist=0)
+                        inv_dist = 1.0 / dist if dist > 1e-6 else 1000000.0
+                        rerank_score = inv_dist + (hits * LEXICAL_RERANK_WEIGHT)
+                        reranked_relevant.append((doc, meta, dist, rerank_score))
 
-                    relevant = sorted(
-                        relevant, key=lexical_score, reverse=True)
+                    reranked_relevant = sorted(
+                        reranked_relevant, key=lambda item: item[3], reverse=True)
                     log.info(
                         "query_memory | lexical re-rank applied, top result: %s",
-                        (relevant[0][1] or {}).get("name", "unknown"),
+                        (reranked_relevant[0][1] or {}).get("name", "unknown"),
                     )
+                    relevant_for_evidence = reranked_relevant
+                else:
+                    # Add a placeholder for the rerank score when it's disabled
+                    relevant_for_evidence = [(doc, meta, dist, None) for doc, meta, dist in relevant]
+
 
                 # Final number of reranked results passed to synthesis — kept separate from
                 # FETCH_CAP (which only controls the pre-rerank candidate pool size) to cap
                 # answer scope and cost regardless of how wide FETCH_CAP is set.
-                relevant = relevant[:5]
+                relevant_for_evidence = relevant_for_evidence[:5]
 
                 # Build location-tagged context and sources list
                 context_parts = []
-                sources = []
-                for doc, meta, dist in relevant:
+                evidence_list = []
+                for doc, meta, dist, rerank_score in relevant_for_evidence:
                     meta = meta or {}
                     src_file = meta.get("source_file", "")
                     lineno = meta.get("lineno", "")
@@ -1407,27 +1430,35 @@ async def query_memory(
                     entity_type = meta.get("entity_type", "")
                     parent = meta.get("parent_class", "")
 
+                    evidence_item = {
+                        "source_file": src_file,
+                        "lineno": lineno,
+                        "name": name,
+                        "entity_type": entity_type,
+                        "l2_distance": dist,
+                    }
+                    if rerank_score is not None:
+                        evidence_item["rerank_score"] = rerank_score
+                    evidence_list.append(evidence_item)
+
+                    score, score_label = _get_score_tuple(evidence_item)
+                    score_str = f"{score:.2f} {score_label}" if score is not None else "no score"
+
                     location_label = ""
-                    source_entry = ""
-                    if show_sources and src_file and lineno:
+                    if src_file and lineno:
                         location = f"{src_file}:{lineno}"
                         if name and entity_type:
                             label = f"{name} ({entity_type})"
                             if parent:
                                 label += f" in {parent}"
-                            location_label = f"[{location}] {label}"
-                            source_entry = f"`{name}` #{src_file}:{lineno} ({dist:.2f})"
+                            location_label = f"[{location}] {label} — score: {score_str}"
                         else:
-                            location_label = f"[{location}]"
-                            source_entry = f"#{src_file}:{lineno} ({dist:.2f})"
+                            location_label = f"[{location}] — score: {score_str}"
 
                     if location_label:
                         context_parts.append(f"{location_label}\n{doc}")
                     else:
                         context_parts.append(doc)
-
-                    if source_entry:
-                        sources.append(source_entry)
 
                 context = "\n\n".join(context_parts)
 
@@ -1437,15 +1468,28 @@ async def query_memory(
         else:
             answer = await _query_ollama(context, search_query, workspace_id)
 
-        # Prepend sources as inline citations (#file:line) for cross-agent compatibility
-        if show_sources and sources:
-            answer = "Sources: " + ", ".join(sources) + "\n\n" + answer
+        def _format_sources_block(evidence_list: list[dict]) -> str:
+            if not evidence_list:
+                return ""
+            lines = ["\n\nSources:"]
+            for ev in evidence_list:
+                score, score_label = _get_score_tuple(ev)
+                loc = ev.get("source_file", "unknown")
+                if ev.get("lineno") not in (None, ""):
+                    loc += f":{ev['lineno']}"
+                line = f"* {loc} — {score:.2f} ({score_label})" if isinstance(score, (int, float)) else f"* {loc} (no score)"
+                note = ev.get("note")
+                if note:
+                    line += f" — {note}"
+                lines.append(line)
+            return "\n".join(lines)
 
-        return answer
+        # Final return — plain string again, no JSON
+        return answer + _format_sources_block(evidence_list if 'evidence_list' in locals() else [])
 
     except Exception as exc:
         log.error("query_memory failed: %s", exc)
-        return f"ERROR: Memory query failed — {exc}"
+        return f"Memory query failed — {exc}"
 
 
 async def _query_deepseek(context: str, user_query: str, workspace_id: str) -> str:
@@ -1476,6 +1520,20 @@ async def _query_deepseek(context: str, user_query: str, workspace_id: str) -> s
         max_tokens=1024,
     )
 
+    choice = response.choices[0]
+    content = choice.message.content
+
+    # Fallback for reasoning-enabled models (e.g. v4-pro) that populate
+    # reasoning_content instead of (or in addition to) content.
+    if not content:
+        content = getattr(choice.message, "reasoning_content", None)
+
+    if not content:
+        log.warning(
+            "_query_deepseek | empty response | model=%s | finish_reason=%s",
+            model, choice.finish_reason
+        )
+
     # Log cache performance — watch this to verify prefix stability is working
     usage = getattr(response, "usage", None)
     if usage:
@@ -1491,7 +1549,7 @@ async def _query_deepseek(context: str, user_query: str, workspace_id: str) -> s
         # Track token usage to SQLite
         _track_token_usage(workspace_id, "query", model, usage)
 
-    return response.choices[0].message.content
+    return content or ""
 
 
 async def _query_ollama(context: str, user_query: str, workspace_id: str) -> str:

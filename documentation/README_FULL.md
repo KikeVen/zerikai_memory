@@ -681,9 +681,9 @@ The assistant calls `merge_workspaces`. **Irreversible** — the source workspac
 </details>
 
 <details>
-<summary>2026-05-11 — Inline citations & fire-and-forget scanning</summary>
+<summary>2026-05-11 — Structured evidence & fire-and-forget scanning</summary>
 
-- `show_sources` toggle for inline citations per query (default on).
+- `query_memory` now returns structured JSON with evidence metadata for IDE-native rendering.
 - `scan_workspace` returns immediately; brief generates in background.
 - Default `QUERY_DISTANCE_THRESHOLD=1.0` added to `.env`.
 </details>
