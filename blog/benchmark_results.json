@@ -1,0 +1,146 @@
+[
+  {
+    "model": "mistral:7b",
+    "query": "How does query routing decide between Ollama and DeepSeek?",
+    "sample_idx": 0,
+    "latency_s": 14.571391500008758,
+    "answer": " The decision between using Ollama or DeepSeek for a query is not explicitly defined in the provided context. However, we can infer that _query_deepseek function uses DeepSeek by its name and it's called with DeepSeek's client.\n\nFor determining whether to use cloud-based memory service (which could be either Ollama or DeepSeek), there is a function _should_use_cloud defined in main.py. It checks for explicit override, keyword match, word count threshold, and default mode. The default mode is determined by the MEMORY_MODE config variable which is set to \"hybrid\" if not specified as an environment variable.\n\nHowever, the context does not contain information about how Ollama fits into this scheme or how it decides to use cloud services or not. For a precise answer, more specific context about Ollama would be needed. #main.py:986, config.py:30-45, main.py:1495-1520",
+    "error": null
+  },
+  {
+    "model": "mistral:7b",
+    "query": "How does query routing decide between Ollama and DeepSeek?",
+    "sample_idx": 1,
+    "latency_s": 5.47336899995571,
+    "answer": " The context provided does not contain information about how query routing decides between Ollama and DeepSeek. However, it seems that the function `_query_deepseek` is used to interact with the DeepSeek model for generating responses based on user queries. To determine if a query should be handled by DeepSeek or some other service (like Ollama), you would need to examine the code related to query routing or service selection, which isn't provided in this context.\n\nHere is the code snippet that handles deciding whether to use cloud services or not:\n\n- _should_use_cloud function in `main.py` #main.py:986\n- Config variables related to MEMORY_MODE and SYNTHESIZE_WITH_CLOUD in `config.py` #config.py:30-45\n\nThese parts of the codebase help decide whether to use cloud services (like DeepSeek) or not, but they don't specify how queries are routed between different cloud services. For that information, you would need to look at the appropriate service selection or routing code.",
+    "error": null
+  },
+  {
+    "model": "mistral:7b",
+    "query": "How does query routing decide between Ollama and DeepSeek?",
+    "sample_idx": 2,
+    "latency_s": 5.341795499960426,
+    "answer": " Based on the provided context, it appears that the codebase doesn't explicitly define a rule for routing queries between Ollama and DeepSeek. However, the decision seems to be influenced by the `_should_use_cloud` function, which determines whether to use cloud-based memory (presumably DeepSeek) or not.\n\nThe function checks if an explicit override is provided, then looks for certain keywords in the user's query, and finally checks the length of the query. If any of these conditions are met, it returns True, indicating that cloud-based memory should be used.\n\nHowever, the actual routing between Ollama and DeepSeek might not be directly related to this function. The `_query_deepseek` function suggests that DeepSeek is used for some queries, but it doesn't specify under what conditions these queries are sent to DeepSeek instead of Ollama.\n\nFor a precise answer about the query routing mechanism between Ollama and DeepSeek, you may need to review additional parts of the codebase or consult the documentation if available.",
+    "error": null
+  },
+  {
+    "model": "ornith:9b",
+    "query": "How does query routing decide between Ollama and DeepSeek?",
+    "sample_idx": 0,
+    "latency_s": 25.67065270000603,
+    "answer": "Based on the retrieved codebase memory, here's how query routing works:\n\n**Routing Logic:**\n\n1. **Explicit Override**: The `_should_use_cloud` function first checks for an explicit `use_cloud` parameter that can force cloud mode (DeepSeek) regardless of other conditions #main.py:986-1005.\n\n2. **Keyword Detection**: If the user query contains keywords like \"architecture\", \"explain\", \"how does\", or \"overview\", it routes to DeepSeek's cloud mode #config.py:43-44.\n\n3. **Word Count Threshold**: Queries exceeding 40 words automatically route to cloud/DeepSeek via `_should_use_cloud`'s word count check #main.py:992-994, with this threshold defined in config as `CLOUD_ESCALATION_WORD_COUNT = 40` #config.py:37.\n\n4. **Default Mode**: Falls back to whatever is set as `DEFAULT_MEMORY_MODE`, which defaults to \"hybrid\" unless explicitly changed via the `MEMORY_MODE` environment variable #config.py:31-32, with this function returning based on whether that mode equals \"cloud\" #main.py:996-998.\n\n**When DeepSeek is Used:**\nThe `_query_deepseek` function handles actual queries to DeepSeek when cloud routing is selected #main.py:1495-1520. It constructs system messages and sends the user query with context, using the `DEEPSEEK_MODEL` configuration value.\n\n**Important Note:** The retrieved context does not contain explicit information about Ollama's role in the routing decision or how local model queries are constructed when cloud mode is NOT selected. This aspect of the architecture is not present in the available memory entities.",
+    "error": null
+  },
+  {
+    "model": "ornith:9b",
+    "query": "How does query routing decide between Ollama and DeepSeek?",
+    "sample_idx": 1,
+    "latency_s": 11.562382600037381,
+    "answer": "Based on the available codebase memory context, I cannot determine how query routing decides between Ollama and DeepSeek. The retrieved entities show:\n\n1. `_should_use_cloud` - Determines cloud usage based on explicit override, keywords, word count threshold, or default mode #main.py:986\n2. `MEMORY_MODE` configuration with cloud/hybrid modes #config.py:30-45\n3. `_query_deepseek` - A function specifically for querying DeepSeek #main.py:1495\n\n**None of these entities contain routing logic between Ollama and DeepSeek.** The context doesn't include any Ollama-related functions or model selection mechanisms that would explain how queries are routed to different models. \n\nIf this routing exists in the codebase, it's not present in the retrieved memory entries. I'd need additional context about Ollama integration points to answer your question fully.",
+    "error": null
+  },
+  {
+    "model": "ornith:9b",
+    "query": "How does query routing decide between Ollama and DeepSeek?",
+    "sample_idx": 2,
+    "latency_s": 16.946685400034767,
+    "answer": "Based on the provided codebase memory, here's what I can tell you about query routing between Ollama and DeepSeek:\n\n## What's Visible\n\n1. **Cloud Escalation Logic** (`main.py:986-1010`) - The `_should_use_cloud()` function determines whether to use cloud services based on:\n   - Explicit user override\n   - Keyword matching (e.g., \"architecture\", \"explain\", \"how does\", \"overview\")\n   - Word count threshold (>40 words)\n   - Default memory mode\n\n2. **DeepSeek Query** (`main.py:1495-1520`) - The `_query_deepseek()` function sends context + user queries to DeepSeek's API.\n\n3. **Configuration** (`config.py:30-45`) - `MEMORY_MODE` defaults to `\"hybrid\"`, and `SYNTHESIZE_WITH_CLOUD = True`.\n\n## What's Missing\n\nThe provided context does not contain:\n- An Ollama query function or routing logic\n- Code showing how queries are split between local (Ollama) vs cloud (DeepSeek) models\n- The actual routing decision mechanism for hybrid mode\n\nTo understand the complete routing logic, you would need to examine other parts of the codebase not shown in this memory. Would you like me to search for additional context?",
+    "error": null
+  },
+  {
+    "model": "mistral:7b",
+    "query": "Where is the .brain directory path defined and how is it resolved?",
+    "sample_idx": 0,
+    "latency_s": 6.939622700039763,
+    "answer": " The `.brain` directory path is defined in the `config.py` file on line 1, and it's resolved as `Path(DB_PATH)`, which expands to `os.path.join('.', DB_PATH)`. In this case, `DB_PATH` equals '.brain/'. However, when used in practice (for example, in the `init_workspace` function of `main.py`), the path is resolved using Python's `Path()` method with the current working directory and the value of `DB_PATH`. This is done by calling `path = Path(workspace_path).resolve()`, then creating a new path for the database as `db_path = path / DB_PATH`.",
+    "error": null
+  },
+  {
+    "model": "mistral:7b",
+    "query": "Where is the .brain directory path defined and how is it resolved?",
+    "sample_idx": 1,
+    "latency_s": 3.1931503000087105,
+    "answer": " The `.brain` directory path is defined in the file `config.py`, line 1: `DB_PATH = '.brain/'`. In the codebase, this directory path is resolved and created using the `Path()` function from the `pathlib` module. Specifically, it's resolved within the `init_workspace()` function in the file `main.py`, line 127: `db_path = path / DB_PATH`. Here, `path` is a Path object created on line 124 from the provided workspace_path, and `DB_PATH` comes from the configuration file (config.py).",
+    "error": null
+  },
+  {
+    "model": "mistral:7b",
+    "query": "Where is the .brain directory path defined and how is it resolved?",
+    "sample_idx": 2,
+    "latency_s": 1.789539400022477,
+    "answer": " The `.brain` directory path is defined in the `config.py` file, specifically on line 1: `DB_PATH = '.brain/'`. During runtime, this absolute path is resolved by creating a new Python Path object from it using `Path(DB_PATH)` in both the `config.py` and `main.py` files.",
+    "error": null
+  },
+  {
+    "model": "ornith:9b",
+    "query": "Where is the .brain directory path defined and how is it resolved?",
+    "sample_idx": 0,
+    "latency_s": 12.252548200020101,
+    "answer": "The `.brain` directory path is defined in **config.py** at line 2 as `DB_PATH = '.brain/'`, and resolved into an actual filesystem path via `Path(DB_PATH)` creating `BRAIN_DIR` [config.py:6]. When initializing a workspace, the final path is constructed by joining the workspace path with `DB_PATH` using Python's `Path / Path` operator in `init_workspace` [main.py:125], then created on disk if it doesn't exist via `.mkdir(parents=True, exist_ok=True)` [main.py:126].",
+    "error": null
+  },
+  {
+    "model": "ornith:9b",
+    "query": "Where is the .brain directory path defined and how is it resolved?",
+    "sample_idx": 1,
+    "latency_s": 8.606970400025602,
+    "answer": "The `.brain` directory path is defined in two places:\n\n1. **Primary definition** in `config.py` [1-15]: The constant `DB_PATH = '.brain/'` is defined, and then resolved as a Path object:\n   ```python\n   BRAIN_DIR = Path(DB_PATH)\n   ```\n\n2. **Workspace initialization** in `main.py` [120-145]: When initializing a workspace via `init_workspace()`, the path is resolved relative to the provided `workspace_path`:\n   ```python\n   db_path = path / DB_PATH  # Combines workspace root with .brain/\n   ```\n\nThe `.brain` directory is created automatically using `mkdir(parents=True, exist_ok=True)` in both contexts, ensuring it exists at the appropriate level (either directly under the current directory or within a specific workspace).",
+    "error": null
+  },
+  {
+    "model": "ornith:9b",
+    "query": "Where is the .brain directory path defined and how is it resolved?",
+    "sample_idx": 2,
+    "latency_s": 9.894720299984328,
+    "answer": "The `.brain` directory path is defined and resolved through two key locations:\n\n**Definition:** In `config.py`, line 1-2, there's a constant that defines the base name for the brain directory [config.py:1]:\n```python\nDB_PATH = '.brain/'\nBRAIN_DIR = Path(DB_PATH)\n```\n\n**Resolution:** In `main.py`, lines 120-145, within the `init_workspace` function, this path is resolved by joining it with the workspace's absolute path [main.py:130]:\n```python\npath = Path(workspace_path).resolve()\ndb_path = path / DB_PATH\ndb_path.mkdir(parents=True, exist_ok=True)\n```\n\nThe resolution process:\n1. Takes the provided `workspace_path` parameter\n2. Resolves it to an absolute path using `.resolve()`\n3. Joins it with the `.brain/` directory constant\n4. Creates the full directory structure if it doesn't exist",
+    "error": null
+  },
+  {
+    "model": "mistral:7b",
+    "query": "How does the background brief synthesis avoid MCP timeouts?",
+    "sample_idx": 0,
+    "latency_s": 6.30794440000318,
+    "answer": " The _background_brief_synthesis function in your codebase avoids Multi-Cloud Provider (MCP) timeouts by executing the brief synthesis asynchronously using `asyncio.create_task`. This allows the function to return immediately after initiating the task, instead of waiting for it to complete #main.py:784-810. The actual synthesis process is handled by the _synthesize_deep_brief function, which is called asynchronously #main.py:792. By running tasks concurrently, this approach ensures that the MCP does not time out due to long-running processes in the main thread.",
+    "error": null
+  },
+  {
+    "model": "mistral:7b",
+    "query": "How does the background brief synthesis avoid MCP timeouts?",
+    "sample_idx": 1,
+    "latency_s": 2.9164855999988504,
+    "answer": " The background brief synthesis avoids MCP (Model Card Packages) timeouts by starting a fire-and-forget task for the _synthesize_deep_brief function asynchronously. This is done using asyncio's `create_task` #main.py:789, which allows functions to run concurrently without blocking the main thread. The _synthesize_deep_brief function builds multiple tasks for each section of the brief and awaits their completion, which may help in managing time efficiently to avoid MCP timeouts. #main.py:547",
+    "error": null
+  },
+  {
+    "model": "mistral:7b",
+    "query": "How does the background brief synthesis avoid MCP timeouts?",
+    "sample_idx": 2,
+    "latency_s": 3.161579800012987,
+    "answer": " The _background_brief_synthesis function avoids Multi-Caller (MCP) timeouts by creating a separate asynchronous task for brief synthesis using asyncio.create_task. This allows the task to run in the background, not blocking the main thread and therefore not causing MCP timeouts #main.py:784-810. The actual synthesis is performed by the _synthesize_deep_brief function, which creates multiple asynchronous tasks for building section content and combines them, avoiding long wait times that could lead to MCP timeouts #main.py:538-570.",
+    "error": null
+  },
+  {
+    "model": "ornith:9b",
+    "query": "How does the background brief synthesis avoid MCP timeouts?",
+    "sample_idx": 0,
+    "latency_s": 18.357183300016914,
+    "answer": "The background brief synthesis avoids MCP timeouts by using a **fire-and-forget pattern** with `asyncio.create_task()`:\n\n1. The `_background_brief_synthesis` function creates an asyncio task and returns immediately without waiting for completion:\n   ```python\n   asyncio.create_task(_synthesize_deep_brief(workspace_id, workspace_path))\n   return {\"status\": \"brief_synthesis_started\", \"workspace_id\": workspace_id}\n   ```\n\n2. The actual synthesis work runs independently in `_synthesize_deep_brief`, which:\n   - Builds 9 sections concurrently using `asyncio.gather()` with `return_exceptions=True`\n   - Writes results to a file at `BRAIN_DIR / \"contexts\" / f\"{workspace_id}.md\"`\n\nSince the function returns immediately and doesn't block on completion, any MCP timeout configured for the main flow won't affect this background task—it runs in its own asyncio coroutine space.",
+    "error": null
+  },
+  {
+    "model": "ornith:9b",
+    "query": "How does the background brief synthesis avoid MCP timeouts?",
+    "sample_idx": 1,
+    "latency_s": 8.767911700007971,
+    "answer": "The background brief synthesis avoids MCP timeouts by using **fire-and-forget pattern** with `asyncio.create_task()`:\n\n```python\nasync def _background_brief_synthesis(workspace_id: str, workspace_path: str):\n    \"\"\"Fire-and-forget brief synthesis to avoid MCP timeout.\"\"\"\n    asyncio.create_task(\n        _synthesize_deep_brief(workspace_id, workspace_path)\n    )\n    return {\"status\": \"brief_synthesis_started\", \"workspace_id\": workspace_id}\n```\n\n**How it works:**\n1. The function immediately returns a success status without waiting for the synthesis to complete\n2. `_synthesize_deep_brief()` runs in the background as an independent async task via `asyncio.create_task()`\n3. This prevents MCP (Model Context Protocol) from timing out while the comprehensive brief (with 9 locked sections) is being generated\n\nThe actual deep brief synthesis, when it completes, writes its results to `BRAIN_DIR / \"contexts\" / f\"{workspace_id}.md\"` #main.py:568-570.",
+    "error": null
+  },
+  {
+    "model": "ornith:9b",
+    "query": "How does the background brief synthesis avoid MCP timeouts?",
+    "sample_idx": 2,
+    "latency_s": 9.52465029997984,
+    "answer": "The background brief synthesis avoids MCP timeouts through a **fire-and-forget** pattern:\n\n1. `_background_brief_synthesis` wraps the actual synthesis work using `asyncio.create_task()`, which launches the task in the background without blocking #main.py:792-793.\n\n2. The function returns immediately with a status response, decoupling from the long-running `_synthesize_deep_brief` workflow that processes 9 locked section names via parallel tasks #main.py:540-541.\n\nThis means MCP calls don't wait for the synthesis to complete—they get an instant acknowledgment while the deep brief runs asynchronously in the background and writes results to `BRAIN_DIR / \"contexts\" / f\"{workspace_id}.md\"` #main.py:568-570.",
+    "error": null
+  }
+]

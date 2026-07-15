@@ -7,13 +7,11 @@ __ignore/
 .brain/vector_db/
 docs/
 scripts/
+blog/
 
 agent_rules/
 embedding-docstring/
 auxiliary_scripts/
-
-<!-- README.md -->
-documentation/README_FULL.md
 
 .gitignore
 .flake8

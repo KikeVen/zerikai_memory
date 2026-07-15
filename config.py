@@ -50,7 +50,7 @@ ENABLE_DEEPSEEK_PRO = os.getenv(
     "ENABLE_DEEPSEEK_PRO", "false").lower() == "true"
 
 # Local Ollama model for summarisation (always free, always local)
-OLLAMA_MODEL = "mistral:7b"  # mistral:7b - llama3.2:latest
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "mistral:7b")
 _host = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
 if _host == "0.0.0.0":
     _host = "http://127.0.0.1:11434"
@@ -133,3 +133,8 @@ LEXICAL_RERANK_WEIGHT = float(os.getenv("LEXICAL_RERANK_WEIGHT", "0.05"))
 # A wider pool allows reranking to pull in keyword-relevant files that might be semantically distant.
 # Does NOT control the final answer size — see the fixed top-5 (`relevant = relevant[:5]`) cutoff applied after reranking in main.py.
 FETCH_CAP = int(os.getenv("FETCH_CAP", "75"))
+
+# Local Ollama concurrency limit.
+# Gates parallel brief synthesis sections to prevent local VRAM thrashing.
+# Default 1 is recommended for 8GB cards; raise if you have more headroom.
+OLLAMA_MAX_CONCURRENCY = int(os.getenv("OLLAMA_MAX_CONCURRENCY", "1"))

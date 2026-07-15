@@ -35,6 +35,7 @@ from config import (
     FETCH_CAP,
     LEXICAL_RERANK_WEIGHT,
     OLLAMA_HOST,
+    OLLAMA_MAX_CONCURRENCY,
     OLLAMA_MODEL,
     QUERY_DISTANCE_THRESHOLD,
     SKIP_BARE_FILES,
@@ -95,6 +96,8 @@ ds_client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
 # Ollama client
 # ---------------------------------------------------------------------------
 ol_client = Client(host=OLLAMA_HOST)
+# Local concurrency semaphore for local synthesis/briefs
+ollama_semaphore = asyncio.Semaphore(OLLAMA_MAX_CONCURRENCY)
 
 
 # ---------------------------------------------------------------------------
@@ -736,8 +739,15 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
         },
     ]
 
+    async def _build_section_safe(s: dict):
+        """Wrapper to gate Ollama calls via semaphore during local synthesis."""
+        if not use_cloud:
+            async with ollama_semaphore:
+                return await _build_section(s, collection, display_name, use_cloud, workspace_id)
+        return await _build_section(s, collection, display_name, use_cloud, workspace_id)
+
     tasks = [
-        _build_section(s, collection, display_name, use_cloud, workspace_id)
+        _build_section_safe(s)
         for s in sections
     ]
     results = await asyncio.gather(*tasks)
@@ -894,7 +904,7 @@ def _build_system_message(workspace_id: str) -> str:
 
 # Text extensions we are willing to read and summarise.
 _TEXT_EXTENSIONS = {
-    ".py", ".js", ".ts", ".jsx", ".tsx",
+    ".py", ".pyw", ".js", ".ts", ".jsx", ".tsx",
     ".md", ".txt", ".rst",
     ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg",
     ".html", ".css", ".sql", ".sh", ".env",
@@ -2007,20 +2017,28 @@ async def _background_scan(
         all_docs: list[str] = []
         all_metas: list[dict] = []
 
+        # Deduplicate to prevent ChromaDB upsert collisions
+        unique_entities: dict[str, tuple[str, dict]] = {}
+
         for fp, status, count, batch in results:
             if status == "entities":
                 saved += 1
                 entity_count += count
                 if batch:
-                    all_ids.extend(batch[0])
-                    all_docs.extend(batch[1])
-                    all_metas.extend(batch[2])
-                    scanned_ids.update(batch[0])
+                    ids, docs, metas = batch
+                    for i in range(len(ids)):
+                        unique_entities[ids[i]] = (docs[i], metas[i])
             elif status == "saved":
                 saved += 1
             elif status == "error":
                 errors += 1
             # "skipped" — counted during Phase 1
+
+        for doc_id, (doc_text, meta) in unique_entities.items():
+            all_ids.append(doc_id)
+            all_docs.append(doc_text)
+            all_metas.append(meta)
+            scanned_ids.add(doc_id)
 
         if all_ids:
             with _db_lock:

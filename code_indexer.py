@@ -95,7 +95,7 @@ JS_LIKE_QUERY = """
 LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
     ".py": LanguageConfig(
         language=PY_LANG,
-        extensions={".py"},
+        extensions={".py", ".pyw"},
         display_name="python",
         entity_query="""
             (function_definition

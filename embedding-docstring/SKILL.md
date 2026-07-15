@@ -22,6 +22,29 @@ component boundary — if they do not exist, they must be written from scratch.
 
 ---
 
+## ENVIRONMENT MODE — DECLARE FIRST
+
+Before doing anything else, determine which execution mode applies and state it
+explicitly at the top of the first response.
+
+**CHAT MODE** (claude.ai, pi.dev, or any non-agentic interface):
+The skill shows diffs and waits for typed approval before applying. "Apply" means
+displaying the corrected block for the user to paste. The approval loop is driven
+by the user typing "yes", "skip", or "stop".
+
+**AGENTIC MODE** (Claude Code in VS Code, terminal, or any tool-executing interface):
+The skill applies edits using `str_replace` targeting the exact existing text —
+never whole-file rewrites. One entity is processed end-to-end (show diff → confirm
+applied → verify placement) before the next entity begins. The approval loop works
+the same way as CHAT MODE: show the diff, pause, wait for explicit "yes" / "skip" /
+"stop", then and only then execute the `str_replace`. Do not batch edits across
+entities. Do not proceed past an entity without a confirmed approval response.
+
+**The approval loop is required in both modes.** It is not optional friction.
+It is the primary safeguard against corrupting the file.
+
+---
+
 ## EXECUTION PROTOCOL
 
 Every run — audit or fix — follows this exact sequence. Do not skip or reorder steps.
@@ -132,43 +155,102 @@ fall back to any hardcoded exclusion list.
 `.memignore` exclusions override explicit user requests unless the user says
 "override .memignore for this file".
 
+---
+
 ### STEP 1 — Per-file entity inventory
 
-For each file in the confirmed list, parse it and emit a numbered entity inventory
-before auditing anything. Entity types differ by file type — apply the correct
-rules below.
+For each file in the confirmed list, run the appropriate parser below and emit a
+numbered entity inventory before auditing or fixing anything.
 
-#### Python and JS/TS files
+#### Python files — run this exact script
 
-Use an AST walker to enumerate every entity. For Python use the `ast` module; for
-JS/TS use `acorn` or the `typescript` parser. Do not scan top-to-bottom — nested
-closures and inner classes are regularly missed that way.
+Do not improvise an AST walk. Execute this script against the target file. It
+recurses into nested functions and async functions via `generic_visit`, which is
+why nested closures are not missed.
 
-Enumerate these node types explicitly:
+```python
+import ast
+import sys
 
-- `FunctionDef` and `AsyncFunctionDef` — all functions including nested closures
-- `ClassDef` — all classes
-- Methods — all `FunctionDef` / `AsyncFunctionDef` inside a `ClassDef`, labelled
-  as `[method]` with the parent class prefix (e.g. `UserManager.login`)
-- Module-level UPPER_CASE constants — `ast.Assign` nodes at module scope where
-  every target name is fully uppercase (e.g. `MAX_RETRY = 3`). Do not include
-  lowercase or mixed-case assignments.
-- Decorators — capture any decorator on a function or method and include it in
-  the entity label. Format: `@decorator_name`. For Flask routes include the
-  HTTP method and path (e.g. `@app.route('/convert', methods=['POST'])`).
-  The decorator must appear in the inventory line and must be included in the
-  docstring prose when the fix is written.
+def collect_entities(filepath):
+    with open(filepath, "r", encoding="utf-8") as f:
+        source = f.read()
+    tree = ast.parse(source, filename=filepath)
 
+    entities = []
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self):
+            self._class_stack = []
+
+        def visit_ClassDef(self, node):
+            decorators = [ast.unparse(d) for d in node.decorator_list]
+            entities.append({
+                "kind": "class",
+                "name": node.name,
+                "line": node.lineno,
+                "decorators": decorators,
+            })
+            self._class_stack.append(node.name)
+            self.generic_visit(node)
+            self._class_stack.pop()
+
+        def visit_FunctionDef(self, node):
+            self._record_func(node)
+
+        def visit_AsyncFunctionDef(self, node):
+            self._record_func(node)
+
+        def _record_func(self, node):
+            decorators = [ast.unparse(d) for d in node.decorator_list]
+            prefix = ".".join(self._class_stack) + "." if self._class_stack else ""
+            kind = "method" if self._class_stack else "function"
+            # Detect Flask/FastAPI routes
+            for d in decorators:
+                if "route" in d or "get(" in d or "post(" in d or "put(" in d or "delete(" in d:
+                    kind = "route"
+                    break
+            entities.append({
+                "kind": kind,
+                "name": f"{prefix}{node.name}",
+                "line": node.lineno,
+                "decorators": decorators,
+            })
+            # Recurse — this captures nested closures
+            self._class_stack.append(node.name) if False else None
+            self.generic_visit(node)
+
+        def visit_Assign(self, node):
+            # Module-level UPPER_CASE constants only
+            if not self._class_stack:
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == target.id.upper() and "_" in target.id or target.id.isupper():
+                        entities.append({
+                            "kind": "constant",
+                            "name": target.id,
+                            "line": node.lineno,
+                            "decorators": [],
+                        })
+
+    Visitor().visit(tree)
+    return entities
+
+if __name__ == "__main__":
+    filepath = sys.argv[1]
+    for i, e in enumerate(collect_entities(filepath), 1):
+        dec = "  " + "  ".join(e["decorators"]) if e["decorators"] else ""
+        print(f"  {i:>3}. [{e['kind']}]  {e['name']:<40} line {e['line']}{dec}")
 ```
-ENTITY INVENTORY — src/auth.py
- 1. [constant]  MAX_RETRY_COUNT               line 12
- 2. [function]  save_user                     line 42
- 3. [function]  validate_token                line 78
- 4. [class]     UserManager                   line 110
- 5. [method]    UserManager.login             line 115  @login_required
- 6. [route]     convert  POST /convert        line 36   @app.route('/convert', methods=['POST'])
-N entities found.
-```
+
+Run as: `python collect_entities.py <filepath>`
+
+#### JS/TS files
+
+Use `acorn` (JS) or the `typescript` parser (TS) with a recursive walk. Enumerate:
+`FunctionDeclaration`, `FunctionExpression`, `ArrowFunctionExpression`, method
+definitions inside `ClassDeclaration` or `ClassExpression`, and `const`/`let`/`var`
+UPPER_CASE assignments at module scope. Recurse into every node's body — do not
+stop at the top level. Track decorators where the language supports them (TS).
 
 #### HTML files
 
@@ -192,9 +274,9 @@ Use a tag scanner to find every significant boundary element: `<section>`,
 
 Locate every `<script>` block in the file that does not have a `src` attribute
 (i.e. inline scripts only — not external script imports). For each inline
-`<script>` block, run the JS AST walker (`acorn` or equivalent) on its contents
-to enumerate every `FunctionDeclaration`, `FunctionExpression`, `ArrowFunctionExpression`,
-and `const`/`let`/`var` UPPER_CASE assignments. Track line numbers relative to
+`<script>` block, run the JS AST walker on its contents to enumerate every
+`FunctionDeclaration`, `FunctionExpression`, `ArrowFunctionExpression`, and
+`const`/`let`/`var` UPPER_CASE assignments. Track line numbers relative to
 the HTML file, not relative to the script block.
 
 For each JS entity found inside a `<script>` block:
@@ -205,6 +287,19 @@ For each JS entity found inside a `<script>` block:
 **Both cases appear in the inventory.** `[js:missing]` entities are fix targets —
 write a JSDoc `/** */` block from scratch. Do not use `<!-- -->` HTML comments
 for inline JS entities — use JSDoc format only.
+
+#### Inventory output format
+
+```
+ENTITY INVENTORY — src/auth.py
+ 1. [constant]  MAX_RETRY_COUNT               line 12
+ 2. [function]  save_user                     line 42
+ 3. [function]  validate_token                line 78
+ 4. [class]     UserManager                   line 110
+ 5. [method]    UserManager.login             line 115  @login_required
+ 6. [route]     convert  POST /convert        line 36   @app.route('/convert', methods=['POST'])
+N entities found.
+```
 
 ```
 ENTITY INVENTORY — templates/page.html
@@ -217,7 +312,9 @@ ENTITY INVENTORY — templates/page.html
 6 entities found. 1 missing HTML comment block. 4 missing JSDoc blocks.
 ```
 
-After completing a file, move automatically to the next file in the inventory.
+After completing a file inventory, move automatically to STEP 2 for that file.
+
+---
 
 ### STEP 2 — Audit each entity
 
@@ -248,6 +345,8 @@ After all files, emit the workspace summary:
 [AUDIT COMPLETE] <workspace> — N files / N passed / N failed / N missing / N skipped
 ```
 
+---
+
 ### STEP 3 — Fix (only when user requests fixes)
 
 **`[MISSING]` and `[FAIL]` entities are both fix targets.** `[MISSING]` means write
@@ -257,8 +356,7 @@ same for both — show what will be inserted or replaced, and where.
 **Read the entire file once before writing any docstring or comment block. Do not
 re-read per entity.** A single file read captures all imports, module-level constants,
 and cross-entity call chains needed to write accurate technology names, routing logic,
-and side effects for every entity in the file. Re-reading per entity wastes tokens
-and risks inconsistent context.
+and side effects for every entity in the file.
 
 For `[MISSING]` HTML entities, write a new `<!-- -->` block immediately above the
 element. Read the element's contents, its `id`, `class`, any `hx-*` attributes, and
@@ -267,44 +365,71 @@ real description based on what the element actually does.
 
 For decorated Python/JS functions (`[MISSING]` or `[FAIL]`), the docstring prose
 must name the decorator explicitly. For Flask routes: state the HTTP method, the
-path, and what the route renders or returns. Example:
-```python
-"""Handles POST /convert requests via Flask route. Uses HTMX for partial page
-updates. Branches based on file validity before invoking pdfminer.six extraction.
-Mutates the filesystem by saving uploaded and converted files to a temp folder.
-No guarantee on LLM output format from Ollama.
-"""
-```
+path, and what the route renders or returns.
 
 For UPPER_CASE constants (`[MISSING]` or `[FAIL]`), write a `#` comment block
 immediately above the constant. State what the constant controls, its valid range
 or allowed values, and any technology it configures. Each constant gets its own
 comment block — never share one block across multiple constants.
 
-**Single entity fix:**
-1. Read the full entity body — all branches, all imports, all external calls,
-   all decorators, all `hx-*` attributes for HTML.
-2. Show before/after diff.
-3. Wait for user approval.
-4. Apply only after approval.
-5. Emit: `[DONE] <name> line <N> — fixed`
+---
 
-**Whole-file fix:**
-1. Read all targeted entities in the file fully.
-2. Show ALL diffs grouped by entity in one block.
-3. Ask: "Approve all, or list entity names/numbers to skip?"
-4. Apply the approved set in a single pass.
-5. Emit one `[DONE]` line per applied fix, then `[FILE COMPLETE]`.
+#### THE APPROVAL LOOP — required for every entity, both modes
 
-**Whole-workspace fix:**
-Same as whole-file fix, but repeat per file. After each file's diffs are shown
-and approved, apply and move to the next file. Do not batch diffs across files —
-approve and apply one file at a time to keep context manageable.
+This loop runs once per entity. Never batch entities across a single approval.
 
-**Resume from interruption:**
-If the user says `"resume from <file> <name> line <N>"`, reload the workspace file
-inventory, skip all files before `<file>`, skip all entities in `<file>` before
-`<name>`, and continue from STEP 2. Works across both audit and fix runs.
+**For each `[FAIL]` or `[MISSING]` entity:**
+
+1. Show the entity name, kind, and line number.
+2. Show a before/after diff (BEFORE: existing text or "none"; AFTER: proposed text).
+3. State exactly where the insertion or replacement will land.
+4. Stop. Wait for the user to respond with one of:
+   - `"yes"` — apply this fix and advance to the next entity
+   - `"skip"` — leave this entity unchanged and advance to the next entity
+   - `"stop"` — halt the entire run; emit a resume checkpoint (see Resume section)
+5. Apply only after receiving an explicit `"yes"`.
+
+**In AGENTIC MODE**, "apply" means executing a `str_replace` using the exact
+existing text as the search target. Rules:
+
+- Never rewrite the whole file. `str_replace` only.
+- The `old_str` must be the precise existing docstring text (for `[FAIL]`) or the
+  exact line of the `def`, `class`, constant assignment, or HTML tag (for `[MISSING]`
+  insertions). Match indentation exactly.
+- After executing `str_replace`, immediately read back the modified lines to confirm
+  the insertion landed at the correct location and did not alter any surrounding code.
+- If the read-back shows a mismatch — wrong indentation, wrong location, code lines
+  altered — undo the edit, report the failure, and stop. Do not attempt a retry
+  without user instruction.
+- Do not proceed to the next entity until the read-back confirms the edit is clean.
+
+**In CHAT MODE**, "apply" means displaying the corrected block for the user to paste.
+After displaying it, confirm with: `"[READY] Paste the above into <file> at line N.
+Type 'yes' when done to continue, or 'skip' to leave it and move on."`
+
+**The approval loop cannot be shortened, collapsed, or batched regardless of how
+many entities are in the file.** If the user says "just fix all of them", reply:
+`"To protect the file I'll show each fix one at a time and need a 'yes' per entity.
+Type 'yes' after each one and I'll move through them as fast as you confirm."`
+
+---
+
+#### Resume from interruption
+
+If the run is interrupted, emit a resume checkpoint before stopping:
+
+```
+[CHECKPOINT] Interrupted after <entity_name> in <file>.
+To resume: "resume from <file> <entity_name>"
+Completed: N entities. Remaining: N entities.
+```
+
+To resume, the user says: `"resume from <file> <entity_name>"`.
+
+**Resume is always by entity name, never by line number.** Line numbers shift after
+every insertion. Reloading by name is stable. On resume: reload the workspace file
+inventory, re-run STEP 1 on the target file to get current line numbers, skip all
+entities that were already completed, and continue from the named entity.
 
 ---
 
@@ -333,8 +458,11 @@ entity. Each item is required unless the code genuinely has nothing to say for i
 - **Prose body** (above Args/Returns/Raises): 6 lines or 400 characters, whichever
   is shorter.
 - **Args/Returns/Raises**: no size limit. Structural; scale with the signature.
-- **Trim rule**: if the prose body is longer than the function body, trim it.
-  A docstring must not outweigh the code it describes.
+- **Trim rule**: if the prose body line count exceeds the function body line count,
+  trim to match. Count only non-blank, non-decorator lines in the function body.
+  A 3-line utility function with a 4-line docstring is acceptable — do not trim
+  aggressively on short functions. Only trim when the docstring is genuinely longer
+  than the code.
 
 ---
 

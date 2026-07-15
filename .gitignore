@@ -10,3 +10,4 @@ __pycache__
 venv/
 scripts/
 docs/
+auxiliary_scripts/
