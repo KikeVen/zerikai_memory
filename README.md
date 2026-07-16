@@ -24,6 +24,7 @@ zerikai_memory provides persistent, workspace-isolated memory for every IDE that
   <br><br>
   <img alt="GitHub commits since latest release" src="https://img.shields.io/github/commits-since/KikeVen/zerikai_memory/latest">
   <img alt="GitHub Actions Workflow Status" src="https://img.shields.io/github/actions/workflow/status/KikeVen/zerikai_memory/ci.yml">
+  <img src="https://glitch.me" alt="Views">
 </p>
 
 <p align="center">
