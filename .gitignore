@@ -11,3 +11,4 @@ venv/
 scripts/
 docs/
 auxiliary_scripts/
+blog/Post-Mortem_Building_Local_MCP_Server_Codebase_Memory_using_Ollama_and_ChromaDB.pdf

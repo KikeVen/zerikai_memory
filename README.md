@@ -32,6 +32,10 @@ zerikai_memory provides persistent, workspace-isolated memory for every IDE that
 This project is used daily and actively maintained by the author. Pull Requests and Issues are closed to keep maintenance overhead low. It is provided fully functional and ready for production use.
 </p>
 
+⚠️ **Platform Support Notice:**
+
+> **Note**: This project is developed and actively maintained on **Windows**. GitHub Actions verifies that basic installation compiles across Windows, macOS, and Linux, but the maintainer cannot troubleshoot platform-specific runtime errors on Mac or Linux. **Community pull requests fixing Mac/Linux bugs are highly welcome!**
+
 ---
 
 ## The Problem
@@ -390,5 +394,5 @@ To read more about the underlying design principles, architecture decisions, and
 MIT License © [Zerikai](http://zerikai.com)
 
 <p align="center">
-🛠️ <strong>Support:</strong> This project is provided as-is for personal use. To prevent automated spam and AI-generated noise, direct email and issue tracking are disabled. For questions, please use the AI assistant zerikai.com I will get the message and get back to you, don't forget to leave a way to contact you.
+🛠️ <strong>Support:</strong> This project is provided as-is for personal use.
 </p>

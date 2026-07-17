@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: "🪟 Windows Bug Reports"
+    url: https://github.com
+    about: Report a bug or installation issue specifically occurring on Windows systems.
+  - name: "🍎 Mac & 🐧 Linux Community Support"
+    url: https://github.com
+    about: Ask the community for help with Mac or Linux installation and errors.

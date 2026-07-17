@@ -1,0 +1,34 @@
+name: "🪟 Windows Bug Report"
+description: File a bug report specifically for Windows systems.
+title: "[Bug]: "
+labels: ["windows", "bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ### Thanks for reporting a bug!
+        Please note that this issue tracker is strictly for **Windows** environments. If you are using macOS or Linux, please close this window and visit our Discussions tab instead.
+  - type: input
+    id: win-version
+    attributes:
+      label: Windows Version
+      description: e.g., Windows 10, Windows 11 (Build 22H2)
+      placeholder: Windows 11
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Provide a clear description of the bug and steps to reproduce it.
+      placeholder: When I click run, the application crashes...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Log Output
+      description: Copy and paste any terminal errors or log outputs here.
+      render: shell
+    validations:
+      required: false
