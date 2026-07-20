@@ -54,7 +54,9 @@ The threshold is controlled by `CLOUD_ESCALATION_WORD_COUNT` in `main.py`.
 
 ## Memory Mode and Backend Scope
 
-| Mode | Scan Engine | Query Engine |
+> 💡 **Core Parsing:** Note that the heavy lifting for code indexing (Tree-Sitter) is **always local and deterministic**. The engines below handle architectural synthesis (Briefs) and non-code fallbacks.
+
+| Mode | Analysis & Briefs | Query Engine |
 |---|---|---|
 | `cloud` | DeepSeek | DeepSeek (auto-routed) |
 | `hybrid` | Ollama | Ollama + DeepSeek (auto-routed) |

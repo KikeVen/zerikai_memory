@@ -327,13 +327,15 @@ When a workspace is scanned, Zerikai compiles a dense **1,000–1,200 token proj
 
 ## Memory Modes
 
-Adjust your operation profile via the `MEMORY_MODE` environment toggle to balance privacy, speed, and API costs:
+Adjust your operation profile via the `MEMORY_MODE` environment toggle to balance privacy, speed, and API costs.
 
-| Mode | Scan Engine | Query Engine | Total Cost | Ideal Use Case |
+> 💡 **Deterministic First:** All high-resolution code parsing (functions, classes, methods) is performed **locally and deterministically** using Tree-Sitter for $0 cost. The engines below are only used for text-file fallbacks and generating the architectural Project Brief.
+
+| Mode | Analysis & Briefs | Query Engine | Total Cost | Ideal Use Case |
 | --- | --- | --- | --- | --- |
-| 🟢 `cloud` | DeepSeek | DeepSeek | Low | **Recommended.** Maximum context nuance, no local setup. |
-| 🟡 `hybrid` | Ollama | Ollama + DeepSeek | Lowest | Tight data governance. Free local lookups with cloud escalation. |
-| 🔴 `local` | Ollama | Ollama | **$0.00** | 100% air-gapped offline environment tracking. |
+| 🟢 `cloud` | DeepSeek | DeepSeek | Low | **Recommended.** High-fidelity architectural briefs. |
+| 🟡 `hybrid` | Ollama | Ollama + DeepSeek | Lowest | Local privacy with cloud reasoning escalation. |
+| 🔴 `local` | Ollama | Ollama | **$0.00** | 100% air-gapped hardware-local tracking. |
 
 ---
 

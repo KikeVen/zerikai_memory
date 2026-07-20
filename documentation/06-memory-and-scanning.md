@@ -66,8 +66,9 @@ deleted after merge.
 
 ## Bare Files
 
-Files where tree-sitter finds zero parseable entities are called bare files. By
-default they are sent to DeepSeek for LLM-based extraction (~$0.000167/file).
+Files where tree-sitter finds zero parseable entities are called **bare files**. By
+default they are sent to the **Analysis Engine** (DeepSeek or Ollama depending on
+mode) for LLM-based extraction (~$0.000167/file via Cloud).
 
 To skip bare files instead of paying for LLM extraction:
 

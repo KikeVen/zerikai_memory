@@ -76,9 +76,11 @@ checklist, format reference, and invocation patterns.
 
 ## Memory Mode Comparison
 
-| Mode | Scan Engine | Query Engine | Cost | Best For |
+> 💡 **Deterministic First:** All high-resolution code parsing (functions, classes, methods) is performed **locally and deterministically** using Tree-Sitter for $0 cost. The engines below are only used for text-file fallbacks and generating the architectural Project Brief.
+
+| Mode | Analysis & Briefs | Query Engine | Cost | Best For |
 |---|---|---|---|---|
-| `cloud` | DeepSeek | DeepSeek | Low | **Recommended.** No Ollama required. Best brief quality. |
+| `cloud` | DeepSeek | DeepSeek | Low | **Recommended.** No Ollama required. best brief quality. |
 | `hybrid` | Ollama | Ollama + DeepSeek (auto) | Lowest | Privacy-sensitive projects. Free local lookups, cloud for architecture. |
 | `local` | Ollama | Ollama | $0 | Full local privacy. Lower brief quality. |
 

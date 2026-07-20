@@ -34,8 +34,8 @@ natural language.
 tree-sitter grammars extract functions, classes, constants, and their docstrings
 from source files into structured `CodeEntity` objects. Supports Python, JavaScript,
 TypeScript, and HTML. Entities with no parseable structure (bare files) are routed
-to DeepSeek for LLM-based extraction if `SKIP_BARE_FILES` does not exclude their
-extension.
+to the **Analysis Engine** (defined by `MEMORY_MODE`) for LLM-based extraction if 
+`SKIP_BARE_FILES` does not exclude their extension.
 
 ### 3 — Vector Storage Layer (`.brain/`)
 
