@@ -7,12 +7,12 @@ to track progress. Four concurrent workers process files in parallel.
 
 **Background pipeline:**
 
-1. Directory walk respecting `.memignore`. Every eligible file (`.py`, `.js`, `.ts`,
-   `.html`) is picked up unless excluded.
+1. Directory walk respecting `.memignore`. Every eligible file (`.py`, `.js`, `.ts`, `.css`,
+   `.html`, `.md`) is picked up unless excluded.
 2. Code files parsed by tree-sitter via 4 concurrent workers. Each file yields a list
    of `CodeEntity` objects (functions, methods, classes, constants, HTML boundary
    elements).
-3. Entities batch-upserted to ChromaDB — up to 300 per call. Entity IDs are
+3. Entities batch-upserted to ChromaDB in a single call. Entity IDs are
    deterministic MD5 hashes of the file path + entity name. Re-scanning overwrites,
    never duplicates. Stale entities (from deleted or renamed files) are purged
    automatically.
@@ -96,7 +96,7 @@ content via DeepSeek (cloud) or Ollama (local/hybrid). Generation time: ~20–30
 seconds with cloud mode.
 
 **Do not force-refresh the brief during normal development.** Force-refreshing resets
-the DeepSeek KV cache. Every query pays full miss-rate pricing (~$0.14/M tokens)
+the DeepSeek KV cache. Every query pays full miss-rate pricing (~$0.22–$0.44/M tokens)
 until the cache warms again on subsequent calls. Only force a refresh after a major
 architectural change:
 

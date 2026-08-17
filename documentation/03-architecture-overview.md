@@ -33,7 +33,7 @@ natural language.
 
 tree-sitter grammars extract functions, classes, constants, and their docstrings
 from source files into structured `CodeEntity` objects. Supports Python, JavaScript,
-TypeScript, and HTML. Entities with no parseable structure (bare files) are routed
+TypeScript, CSS, HTML, and Markdown. Entities with no parseable structure (bare files) are routed
 to the **Analysis Engine** (defined by `MEMORY_MODE`) for LLM-based extraction if 
 `SKIP_BARE_FILES` does not exclude their extension.
 
@@ -107,7 +107,8 @@ and retrieval accuracy.
 | 9 | Future Roadmap | Planned features and TODOs from code |
 
 The brief is the stable prefix that DeepSeek caches across all queries. After the
-first query it caches at **$0.0028/M tokens** (hit) vs. **$0.14/M** (miss).
+first query it caches at **$0.007–$0.014/M tokens** (hit) vs. **$0.22–$0.44/M**
+(input miss, off-peak/peak).
 Force-refreshing resets that cache — treat it like a schema migration.
 
 ---
@@ -127,7 +128,7 @@ Force-refreshing resets that cache — treat it like a schema migration.
 4. LLM synthesis  ──►  Ollama (free) or DeepSeek (cloud, auto-routed)
         │
         ▼
-   Answer + inline #file:line (distance) citations
+   Answer + inline #file:line | score citations
 ```
 
 Citations are stored at scan time — no extra API cost.

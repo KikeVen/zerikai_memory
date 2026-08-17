@@ -173,4 +173,4 @@ Use JSDoc `/** */` format for inline JS — not `<!-- -->` HTML comments.
 |---|---|---|
 | Embedding-Docstring Optimizer | `embedding-docstring/SKILL.md` | Audits and rewrites docstrings across Python, JS, TS, and HTML for vector embedding quality. |
 
-See [embedding-docstring.md](embedding-docstring.md) for the full reference.
+See [02-embedding-docstring.md](02-embedding-docstring.md) for the full reference.

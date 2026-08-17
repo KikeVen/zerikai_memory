@@ -27,7 +27,8 @@ from config import (
     DEEPSEEK_BASE_URL,
     DEEPSEEK_MODEL_FAST,
     DEEPSEEK_MODEL_PRO,
-    DEEPSEEK_PRICING,
+    get_deepseek_pricing,
+    is_deepseek_peak_hour,
     DEFAULT_MEMORY_MODE,
     ENABLE_DEEPSEEK_PRO,
     ENABLE_LEXICAL_RERANK,
@@ -43,6 +44,11 @@ from config import (
     ZERIKAI_DB,
 )
 
+# Format string for every log line via the logging module. Layout:
+# asctime, levelname (8-char padded), logger name, em-dash, message.
+# Applied in logging.basicConfig to both StreamHandler and the
+# RotatingFileHandler writing to .brain/server.log. Free-form printf
+# style — no valid range; edit the string to reshape log output.
 _LOG_FORMAT = "%(asctime)s %(levelname)-8s %(name)s — %(message)s"
 _log_dir = DB_PATH  # .brain/ — already in .memignore via *.log
 
@@ -180,8 +186,8 @@ def _track_token_usage(
 ):
     """Record DeepSeek API token usage and estimated cost to zerikai.db sqlite3.
     Best-effort: returns silently if ENABLE_TOKEN_TRACKING is disabled,
-    usage is None, or insert fails. Routes pricing via model_key
-    ('v4-pro' vs 'v4-flash') to DEEPSEEK_PRICING. Side effect: inserts
+    usage is None, or insert fails. Routes pricing via get_deepseek_pricing()
+    ('v4-pro' vs 'v4-flash') at the UTC time of the call. Side effect: inserts
     one row per call into token_usage table.
     Args:
         workspace_id: The workspace identifier
@@ -199,9 +205,9 @@ def _track_token_usage(
         cache_hit = getattr(usage, "prompt_cache_hit_tokens", 0)
         cache_miss = getattr(usage, "prompt_cache_miss_tokens", 0)
 
-        # Determine pricing tier
+        # Determine pricing tier (time-aware — resolves peak vs off-peak at call time)
         model_key = "v4-pro" if "pro" in model.lower() else "v4-flash"
-        pricing = DEEPSEEK_PRICING.get(model_key, DEEPSEEK_PRICING["v4-flash"])
+        pricing = get_deepseek_pricing(model_key)
 
         # Calculate cost: cache hits + cache misses + output
         cost = (
@@ -848,7 +854,11 @@ def _load_project_context(workspace_id: str) -> str:
 
 
 def _get_score_tuple(evidence_item: dict) -> tuple[float | None, str]:
-    """Return score and score label from evidence item."""
+    """Return score and label from an evidence dict for citation formatting.
+    Routing: prefers 'rerank_score' (label 'rerank'); falls back to
+    ChromaDB 'l2_distance' (label 'L2') when rerank is absent. Returns
+    (None, 'L2') when neither key is present. Pure, deterministic.
+    """
     score = evidence_item.get("rerank_score")
     score_label = "rerank"
     if score is None:
@@ -917,7 +927,15 @@ _MAX_FILE_BYTES = 200_000  # Increased from 100KB to 200KB to include main.py
 # Files larger than this (in lines) are split into chunks before indexing.
 # Prevents DeepSeek from truncating structured extraction on large files.
 _CHUNK_LINE_THRESHOLD = 300   # lines — files above this get chunked
+
+# Lines per chunk when _CHUNK_LINE_THRESHOLD is exceeded. Controls the
+# context window size fed to the LLM summarizer (DeepSeek or Ollama).
+# Typical values 200–500; must stay below the model's context limit.
 _CHUNK_SIZE_LINES = 250   # lines per chunk (with overlap)
+
+# Overlap lines shared between adjacent chunks for context continuity.
+# Keeps entity definitions that straddle a chunk boundary retrievable.
+# Must be smaller than _CHUNK_SIZE_LINES; typical values 10–50.
 _CHUNK_OVERLAP_LINES = 20    # overlap between chunks for context continuity
 
 
@@ -1042,10 +1060,11 @@ def _select_model(user_query: str) -> str:
 
 @mcp.tool()
 async def init_workspace(workspace_path: str) -> str:
-    """Initialize a workspace via zerikai.db sqlite3 registry and ChromaDB.
-    Derives stable UUID via _derive_workspace_id, creates
-    .brain/contexts/<id>.md with placeholder brief. Idempotent —
-    safe to re-call, returns existing info if already registered.
+    """MCP tool (FastMCP @mcp.tool()): initialize a workspace via
+    zerikai.db sqlite3 registry and ChromaDB. Derives stable UUID via
+    _derive_workspace_id, creates .brain/contexts/<id>.md with placeholder
+    brief. Idempotent — safe to re-call, returns existing info if already
+    registered. Side effect: writes context file to filesystem.
     Args:
         workspace_path: Absolute path to the project root.
     """
@@ -1086,12 +1105,12 @@ async def save_to_memory(
     source_id: str | None = None,
     last_modified: str | None = None,
 ) -> str:
-    """Save content to persistent vector memory in ChromaDB via tree-sitter or LLM.
-    Routes by file extension: supported extensions (.py, .js, .ts, .css,
-    .html, .md) use tree-sitter entity extraction; other formats fall
-    through to DeepSeek/Ollama LLM summarisation. Uses deterministic
-    md5 IDs so re-scans overwrite duplicates. Side effect: upserts to
-    ChromaDB collection and logs token usage to zerikai.db sqlite3.
+    """MCP tool (FastMCP @mcp.tool()): save content to persistent vector
+    memory in ChromaDB via tree-sitter or LLM. Routes by extension:
+    supported types (.py, .js, .ts, .css, .html, .md) use tree-sitter
+    extraction; others fall through to DeepSeek/Ollama LLM summarisation.
+    Deterministic md5 IDs make re-scans overwrite duplicates. Side effect:
+    upserts to ChromaDB and logs token usage to zerikai.db sqlite3.
     Args:
         content:   The raw content to remember.
         workspace: Workspace identifier (UUID, short UUID, or display name).
@@ -1324,12 +1343,12 @@ async def query_memory(
     category: str | None = None,
     use_cloud: bool | None = None,
 ) -> str:
-    """Query ChromaDB codebase memory for this workspace with LLM synthesis.
-    Retrieves top FETCH_CAP results from ChromaDB, filters by
-    QUERY_DISTANCE_THRESHOLD (L2 distance), optionally re-ranks via
-    ENABLE_LEXICAL_RERANK, trims to top 5, then synthesizes answer
-    via DeepSeek or Ollama. Auto-routes via _should_use_cloud.
-    Returns a JSON string with 'answer' and 'evidence' keys.
+    """FastMCP @mcp.tool() tool: query ChromaDB memory with LLM synthesis.
+    Fetches FETCH_CAP candidates, filters by L2 distance threshold,
+    re-ranks via ENABLE_LEXICAL_RERANK, trims to top 5, synthesizes
+    via DeepSeek or Ollama (auto-routed by _should_use_cloud). Returns
+    plain answer plus 'Sources:' file:line citations. Side effect: writes
+    token usage to zerikai.db sqlite3 via _track_token_usage. Read-only.
     Args:
         user_query: The question or topic to look up.
         workspace:  Workspace identifier (UUID, short UUID, or display name).
@@ -1479,6 +1498,11 @@ async def query_memory(
             answer = await _query_ollama(context, search_query, workspace_id)
 
         def _format_sources_block(evidence_list: list[dict]) -> str:
+            """Build the trailing 'Sources:' markdown block from evidence items.
+            Each line: '* file:line — score (label)'. Uses _get_score_tuple
+            for rerank/L2 score selection. Falls back to '(no score)' when
+            neither is present. Returns '' for an empty list. Pure read.
+            """
             if not evidence_list:
                 return ""
             lines = ["\n\nSources:"]
@@ -1598,11 +1622,10 @@ async def list_memory(
     category: str | None = None,
     limit: int = 10,
 ) -> str:
-    """List raw ChromaDB memory entries for this workspace.
-    Reads from the ChromaDB collection via collection.get with optional
-    category filter. Use for auditing what has been indexed — not for
-    answering code questions (use query_memory for that). Pure read,
-    no side effects.
+    """MCP tool (FastMCP @mcp.tool()): list raw ChromaDB memory entries.
+    Reads via collection.get with optional category filter. Use for
+    auditing what has been indexed — not for answering code questions
+    (use query_memory for that). Pure read, no side effects.
     Args:
         workspace: Workspace identifier (UUID, short UUID, or display name).
         category:  Optional tag filter.
@@ -1639,11 +1662,11 @@ async def list_memory(
 
 @mcp.tool()
 async def list_workspaces() -> str:
-    """List all known workspaces from zerikai.db and ChromaDB.
-    Scans .brain/contexts/*.md brief files and ChromaDB memory_*
-    collections, cross-referencing workspace_registry for display
-    names. Reports brief and memory presence per workspace. Pure
-    read — no side effects.
+    """MCP tool (FastMCP @mcp.tool()): list all known workspaces from
+    zerikai.db and ChromaDB. Scans .brain/contexts/*.md brief files and
+    ChromaDB memory_* collections, cross-referencing workspace_registry
+    for display names. Reports brief and memory presence per workspace.
+    Pure read — no side effects.
     """
     try:
         context_dir = Path(DB_PATH) / "contexts"
@@ -1710,10 +1733,11 @@ async def list_workspaces() -> str:
 
 @mcp.tool()
 async def resolve_workspace(identifier: str) -> str:
-    """Resolve a workspace identifier to its filesystem path via zerikai.db sqlite3.
-    Three-tier routing: exact UUID → short UUID LIKE → display_name.
-    Query workspace_registry table. Helper for agents without filesystem
-    context. Pure read — no side effects.
+    """MCP tool (FastMCP @mcp.tool()): resolve a workspace identifier to
+    its filesystem path via zerikai.db sqlite3. Three-tier routing: exact
+    UUID → short UUID LIKE → display_name. Query workspace_registry table.
+    Helper for agents without filesystem context. Pure read — no side
+    effects.
     Args:
         identifier: Workspace UUID (full or first 8 chars), or display name
     Returns:
@@ -1778,10 +1802,11 @@ async def resolve_workspace(identifier: str) -> str:
 
 @mcp.tool()
 async def update_brief(workspace: str, new_content: str) -> str:
-    """Replace the project brief in .brain/contexts/<id>.md with new markdown.
-    Resolves workspace via zerikai.db, then overwrites the brief file.
-    Use after significant architectural changes. Side effect: writes to
-    filesystem. No versioning — overwrites existing content.
+    """MCP tool (FastMCP @mcp.tool()): replace the project brief in
+    .brain/contexts/<id>.md with new markdown. Resolves workspace via
+    zerikai.db, then overwrites the brief file. Use after significant
+    architectural changes. Side effect: writes to filesystem. No
+    versioning — overwrites existing content.
     Args:
         workspace:   Workspace identifier (UUID, short UUID, or display name).
         new_content: The full markdown content for the new brief.
@@ -1804,10 +1829,10 @@ async def update_brief(workspace: str, new_content: str) -> str:
 
 @mcp.tool()
 async def get_brief(workspace: str) -> str:
-    """Retrieve the current project brief from .brain/contexts/<id>.md.
-    Resolves workspace via zerikai.db, then reads the brief file.
-    Returns guidance on init_workspace + scan_workspace if no brief
-    exists. Pure read — no side effects.
+    """MCP tool (FastMCP @mcp.tool()): retrieve the current project brief
+    from .brain/contexts/<id>.md. Resolves workspace via zerikai.db, then
+    reads the brief file. Returns guidance on init_workspace +
+    scan_workspace if no brief exists. Pure read — no side effects.
     Args:
         workspace: Workspace identifier (UUID, short UUID, or display name).
     """
@@ -2114,12 +2139,12 @@ async def scan_workspace(
     category: str = "codebase",
     force_refresh_brief: bool = False,
 ) -> str:
-    """Start a background scan of the workspace via _background_scan task.
-    Returns immediately; use scan_status() to track progress. Respects
-    .memignore patterns and _TEXT_EXTENSIONS. Idempotent: overwrites
-    existing files with deterministic md5 IDs, automatically purges
-    stale memories. Re-scanning cancels any in-progress scan. Side
-    effect: launches asyncio.create_task for background processing.
+    """MCP tool (FastMCP @mcp.tool()): start a background workspace scan
+    via _background_scan task; returns immediately — use scan_status()
+    to track progress. Respects .memignore and _TEXT_EXTENSIONS.
+    Idempotent: deterministic md5 IDs overwrite and purge stale
+    memories. Re-scanning cancels any in-progress scan. Side effect:
+    launches asyncio.create_task for background processing.
     Args:
         workspace:  Workspace identifier (UUID, short UUID, or display name).
         category:   Tag applied to every saved memory (default 'codebase').
@@ -2190,10 +2215,10 @@ async def get_token_usage(
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> str:
-    """Return DeepSeek API token usage and cost from zerikai.db sqlite3.
-    Queries token_usage table with optional workspace and date range
-    filters. Reports call count, token totals, cache hit rate, and
-    total cost in USD. Pure read — no side effects.
+    """MCP tool (FastMCP @mcp.tool()): return DeepSeek API token usage and
+    cost from zerikai.db sqlite3. Queries token_usage table with optional
+    workspace and date range filters. Reports call count, token totals,
+    cache hit rate, and total cost in USD. Pure read — no side effects.
     Args:
         workspace:  Optional workspace identifier (UUID, short UUID, or display name). If None, shows all workspaces.
         start_date: Optional ISO date string (YYYY-MM-DD) for filtering. Defaults to beginning of time.
@@ -2282,9 +2307,10 @@ async def get_token_usage(
 
 @mcp.tool()
 async def get_cache_stats(workspace: str | None = None) -> str:
-    """Show DeepSeek cache hit/miss rates by operation from zerikai.db sqlite3.
-    Groups token_usage rows by operation, reporting call count, total
-    hits/misses, and average hit rate per operation type. Pure read.
+    """MCP tool (FastMCP @mcp.tool()): show DeepSeek cache hit/miss rates
+    by operation from zerikai.db sqlite3. Groups token_usage rows by
+    operation, reporting call count, total hits/misses, and average hit
+    rate per operation type. Pure read.
     Args:
         workspace: Optional workspace identifier (UUID, short UUID, or display name). If None, shows all workspaces.
     """
@@ -2361,9 +2387,10 @@ async def get_cost_report(
     workspace: str | None = None,
     period: str = "all",
 ) -> str:
-    """Generate DeepSeek cost breakdown by operation from zerikai.db sqlite3.
-    Groups token_usage rows by operation and model. Supports period
-    filtering (today, week, month, all). Pure read — no side effects.
+    """MCP tool (FastMCP @mcp.tool()): generate DeepSeek cost breakdown by
+    operation from zerikai.db sqlite3. Groups token_usage rows by operation
+    and model. Supports period filtering (today, week, month, all). Pure
+    read — no side effects.
     Args:
         workspace: Optional workspace identifier (UUID, short UUID, or display name). If None, shows all workspaces.
         period:    Time period filter: "today", "week", "month", or "all" (default).
@@ -2457,7 +2484,22 @@ async def get_cost_report(
             f"${totals['grand_total']:>10.4f}"
         )
 
-        return "\n".join(lines)
+        # Build pricing-tier banner (live, no DB touch)
+        utc_now = datetime.now(timezone.utc)
+        tier_label = "PEAK" if is_deepseek_peak_hour(utc_now.hour) else "OFF-PEAK"
+        flash = get_deepseek_pricing("v4-flash", utc_now.hour)
+        pro   = get_deepseek_pricing("v4-pro",   utc_now.hour)
+        tier_banner = (
+            f"[{tier_label} pricing active at {utc_now.strftime('%H:%M UTC')}]\n"
+            f"  v4-flash: ${flash['input']:.3f}/M in | "
+            f"${flash['output']:.3f}/M out | "
+            f"${flash['cache_hit']:.4f}/M cached\n"
+            f"  v4-pro:   ${pro['input']:.3f}/M in | "
+            f"${pro['output']:.3f}/M out | "
+            f"${pro['cache_hit']:.4f}/M cached"
+        )
+
+        return tier_banner + "\n\n" + "\n".join(lines)
 
     except Exception as exc:
         log.error("get_cost_report failed: %s", exc)
@@ -2470,10 +2512,11 @@ async def get_cost_report(
 
 @mcp.tool()
 async def purge_usage_data(before_date: str) -> str:
-    """Delete token tracking records from zerikai.db sqlite3 before a date.
-    Validates date format, counts matching records, then executes DELETE
-    on token_usage table. Irreversible — cannot be undone. Side effect:
-    permanently deletes rows from the database.
+    """MCP tool (FastMCP @mcp.tool()): delete token tracking records from
+    zerikai.db sqlite3 before a date. Validates date format, counts
+    matching records, then executes DELETE on token_usage table.
+    Irreversible — cannot be undone. Side effect: permanently deletes
+    rows from the database.
     Args:
         before_date: ISO date string (YYYY-MM-DD). Records before this date will be deleted.
     """
@@ -2513,10 +2556,11 @@ async def purge_usage_data(before_date: str) -> str:
 
 @mcp.tool()
 async def debug_workspace_id(test_path: str) -> str:
-    """Show what workspace ID _derive_workspace_id would generate from a path.
-    Normalizes the path (case, separators, trailing slashes) and displays
-    the resulting UUID and display name. Useful for debugging path
-    normalization issues. Pure read — no side effects.
+    """MCP tool (FastMCP @mcp.tool()): show what workspace ID
+    _derive_workspace_id would generate from a path. Normalizes the path
+    (case, separators, trailing slashes) and displays the resulting UUID
+    and display name. Useful for debugging path normalization issues.
+    Pure read — no side effects.
     Args:
         test_path: The workspace path to test
     """
@@ -2549,11 +2593,12 @@ async def debug_workspace_id(test_path: str) -> str:
 
 @mcp.tool()
 async def merge_workspaces(source_workspace_id: str, target_workspace_id: str) -> str:
-    """Merge ChromaDB collections from source into target workspace, then delete source.
-    Consolidates duplicate workspace IDs from path variations. Uses
-    collection.upsert to move data, then deletes source via
-    db_client.delete_collection. Irreversible — cannot be undone.
-    Side effect: permanently deletes source collection.
+    """MCP tool (FastMCP @mcp.tool()): merge ChromaDB collections from
+    source into target workspace, then delete source. Consolidates
+    duplicate workspace IDs from path variations. Uses collection.upsert
+    to move data, then deletes source via db_client.delete_collection.
+    Irreversible — cannot be undone. Side effect: permanently deletes
+    source collection.
     Args:
         source_workspace_id: The workspace ID to merge FROM (will be deleted after merge)
         target_workspace_id: The workspace ID to merge INTO (will receive all data)
@@ -2622,10 +2667,10 @@ async def merge_workspaces(source_workspace_id: str, target_workspace_id: str) -
 
 @mcp.tool()
 async def scan_status(workspace: str) -> str:
-    """Return progress of a running or completed background scan from _scans.
-    Reads ScanProgress for the workspace: files scanned/skipped/errored,
-    entities indexed, brief synthesis status, elapsed time, and ETA.
-    Pure read — no side effects.
+    """MCP tool (FastMCP @mcp.tool()): return progress of a running or
+    completed background scan from _scans. Reads ScanProgress for the
+    workspace: files scanned/skipped/errored, entities indexed, brief
+    synthesis status, elapsed time, and ETA. Pure read — no side effects.
     Args:
         workspace: Workspace identifier (UUID, short UUID, or display name).
     """

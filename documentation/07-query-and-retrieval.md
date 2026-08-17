@@ -17,7 +17,7 @@ Every query runs through a 4-stage pipeline:
 4. LLM synthesis  ──►  Ollama (free) or DeepSeek (cloud, auto-routed)
         │
         ▼
-   Answer + inline #file:line (distance) citations
+   Answer + inline #file:line | score citations
 ```
 
 ---
@@ -28,7 +28,7 @@ ChromaDB performs an L2 (Euclidean) distance search over all indexed entities fo
 the workspace. Returns the top-N candidates ranked by distance — lower distance
 means higher similarity to the query.
 
-`QUERY_DISTANCE_THRESHOLD` (default `1.0`) filters out candidates beyond the
+`QUERY_DISTANCE_THRESHOLD` (default `1.5`) filters out candidates beyond the
 configured cutoff. Lower values are stricter. If you see answers citing loosely
 related code, lower the threshold. If relevant entities are being missed, raise it.
 
@@ -63,9 +63,9 @@ Auto-routing selects the engine based on query length and keywords. See
 
 ## Source Citations
 
-Every `query_memory` response includes inline `#file:line (distance)` citations in
-plain text format — cross-IDE compatible, clickable in VS Code Copilot. This
-metadata is stored at scan time and carries no extra API cost.
+Every `query_memory` response includes inline `#file:line | score L2 or rerank`
+citations in plain text format — cross-IDE compatible, clickable in VS Code
+Copilot. This metadata is stored at scan time and carries no extra API cost.
 
 The distance score in parentheses indicates how closely the retrieved entity matched
 the query. Lower distance = stronger match. Use these scores to calibrate
@@ -87,7 +87,7 @@ larger and the entity may fall below the threshold.
 
 This is why the `embedding-docstring` skill and `.memignore` are prerequisites before
 the first scan. The pipeline cannot compensate for missing or vague source material.
-See [skills/embedding-docstring.md](skills/embedding-docstring.md).
+See [skills/02-embedding-docstring.md](skills/02-embedding-docstring.md).
 
 ---
 

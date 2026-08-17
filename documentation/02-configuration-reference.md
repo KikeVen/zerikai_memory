@@ -51,7 +51,7 @@ weaker or incomplete.
 **Run the skill first. Then scan.** Docstrings fixed after indexing require a full
 rescan to take effect.
 
-See [skills/embedding-docstring.md](skills/embedding-docstring.md) for the full
+See [skills/02-embedding-docstring.md](skills/02-embedding-docstring.md) for the full
 checklist, format reference, and invocation patterns.
 
 ---
@@ -64,7 +64,7 @@ checklist, format reference, and invocation patterns.
 | `MEMORY_MODE` | `cloud` | `cloud` / `hybrid` / `local` — see mode table below. |
 | `ENABLE_TOKEN_TRACKING` | `true` | Tracks usage and cost in `.brain/zerikai.db`. |
 | `ENABLE_DEEPSEEK_PRO` | `false` | Enables v4-pro for architectural queries. 6× more expensive — keep `false` unless needed. |
-| `QUERY_DISTANCE_THRESHOLD` | `1.0` | L2 distance cutoff for retrieval. Lower = stricter matches. Watch `server.log` to calibrate. |
+| `QUERY_DISTANCE_THRESHOLD` | `1.5` | L2 distance cutoff for retrieval. Lower = stricter matches. Watch `server.log` to calibrate. |
 | `ENABLE_LEXICAL_RERANK` | `false` | Hybrid rerank: boosts results with keyword overlap in entity name + docstring. |
 | `LEXICAL_RERANK_WEIGHT` | `0.05` | Per-keyword boost weight. Keep below `0.156` to avoid overriding semantic results. |
 | `SKIP_BARE_FILES` | `[]` | Extensions to skip when tree-sitter finds zero entities. E.g. `['.py', '.html', '.md', '.css']`. |
@@ -129,17 +129,28 @@ Routing is automatic. Override explicitly with `use_cloud=True` or `use_cloud=Fa
 | Condition | Engine | Cost |
 |---|---|---|
 | Short, specific query (under 40 words) | Ollama | Free |
-| Query ≥ 40 words | DeepSeek v4-flash | ~$0.0028/M cached tokens |
-| Contains `refactor`, `architect`, `design`, `audit` | DeepSeek v4-pro | ~$0.003625/M cached tokens |
+| Query ≥ 40 words | DeepSeek v4-flash | ~$0.007–$0.014/M cached tokens (off-peak / peak) |
+| Contains `refactor`, `architect`, `design`, `audit` | DeepSeek v4-pro | ~$0.022–$0.044/M cached tokens (off-peak / peak) |
 | `use_cloud=True` override | DeepSeek | Varies |
 | `use_cloud=False` override | Ollama | Free |
 
 ---
 
-## DeepSeek KV Cache
+## DeepSeek KV Cache & Pricing Tiers
+
+DeepSeek now uses **peak / off-peak pricing**. Peak hours (UTC): **01:00–04:00** and
+**06:00–10:00**. Off-peak rates are exactly half of peak rates.
+
+| Tier | v4-flash input | v4-flash output | v4-flash cached | v4-pro input | v4-pro output | v4-pro cached |
+|---|---|---|---|---|---|---|
+| **Peak** | $0.44/M | $1.32/M | $0.014/M | $1.32/M | $3.96/M | $0.044/M |
+| **Off-peak** | $0.22/M | $0.66/M | $0.007/M | $0.66/M | $1.98/M | $0.022/M |
+
+Use `get_deepseek_pricing(model_key)` (from `config.py`) — **never reference
+`DEEPSEEK_PRICING` directly.** The function resolves the correct tier at call time.
 
 The project brief is a fixed prefix on every DeepSeek API call. After the first query
-it caches at **$0.0028/M tokens** (hit) vs **$0.14/M** (miss) — roughly 50× cheaper.
+it caches at the active cached rate — roughly 30–60× cheaper than a cache miss.
 
 To protect this prefix:
 

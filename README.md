@@ -78,7 +78,7 @@ Your IDE       →  MCP Server (:stdio)        →        ▼
 | 🟡 **Context window** | Raw file dumps shrink the window available for code generation | 1,000–1,200 token brief prefix*. Window stays wide open.  |
 | ⚪ **IDE switching** | Full re-explanation required in every new tool | Shared zerikai_memory workspace `.brain/` directory.  |
 
-> **Tip:** The project brief acts as a stable prefix. After your first query, *DeepSeek caches it, making subsequent repeated queries **up to 50× cheaper**.
+> **Tip:** The project brief acts as a stable prefix. After your first query, DeepSeek caches it — making subsequent repeated queries **30–60× cheaper** (rate depends on whether you are in peak or off-peak hours). See the [DeepSeek Pricing](#deepseek-pricing) section for current rates.
 
 ---
 
@@ -132,8 +132,8 @@ MEMORY_MODE=cloud
 ENABLE_TOKEN_TRACKING=true
 
 # Enable deepseek-v4-pro for complex architectural queries (design, architecture, tradeoffs)
-# v4-pro is 3x more expensive than v4-flash (currently $0.435/M vs $0.14/M input)
-# After May 31 2026, v4-pro will be 6x more expensive ($1.74/M vs $0.14/M)
+# v4-pro is 3x more expensive than v4-flash. See DeepSeek Pricing section below
+# for current peak/off-peak rates.
 # Recommended: keep this "false" unless you need maximum reasoning capability
 ENABLE_DEEPSEEK_PRO=false
 
@@ -292,7 +292,7 @@ You never run these commands directly; your active AI agent executes them on you
 | `scan_status` | Returns progress of a running or recently completed background scan: files scanned, entities indexed, errors, elapsed time, brief status. |
 | `save_to_memory` | Manually saves an architectural decision, fact, or technical note with an optional category tag. |
 | `list_memory` | Lists stored memories for a workspace, optionally filtered by category. |
-| `query_memory` | Retrieves relevant context via vector search and synthesises an answer via Ollama or DeepSeek (auto-routed). Returns a structured JSON result (parsed by the IDE agent) with clickable file links and relevance scores. |
+| `query_memory` | Retrieves relevant context via vector search and synthesises an answer via Ollama or DeepSeek (auto-routed). Returns the answer as plain text plus a trailing `Sources:` block of `file:line` citations with relevance scores (L2 distance or rerank). |
 | `get_brief` | Retrieves the current project brief from `.brain/contexts/`. |
 | `update_brief` | Manually updates the markdown content of a project brief. |
 
@@ -301,7 +301,7 @@ You never run these commands directly; your active AI agent executes them on you
 | Tool | Description |
 |---|---|
 | `get_token_usage` | Returns DeepSeek API token usage and cost statistics. |
-| `get_cost_report` | Generates a cost breakdown by operation type. |
+| `get_cost_report` | Generates a cost breakdown by operation type. Prepends a live **PEAK / OFF-PEAK** banner showing currently active rates. |
 | `get_cache_stats` | Shows cache hit/miss rates by operation type. |
 | `purge_usage_data` | Deletes historical token tracking records. |
 
@@ -346,9 +346,42 @@ Adjust your operation profile via the `MEMORY_MODE` environment toggle to balanc
 | `DEEPSEEK_API_KEY` | *Required* | Active API authorization key from platform.deepseek.com. |
 | `MEMORY_MODE` | `cloud` | Sets target engines: choices include `cloud`, `hybrid`, or `local`. |
 | `ENABLE_TOKEN_TRACKING` | `true` | Calculates continuous usage and outputs summaries to SQLite. |
-| `QUERY_DISTANCE_THRESHOLD` | `1.0` | Sets L2 vector distance cutoff limits. Lower inputs restrict matches. |
+| `QUERY_DISTANCE_THRESHOLD` | `1.5` | Sets L2 vector distance cutoff limits. Lower inputs restrict matches. |
 | `ENABLE_LEXICAL_RERANK` | `false` | Activates secondary hybrid reordering layer via keyword matching. |
 | `SKIP_BARE_FILES` | `[]` | Extension list to bypass when tree-sitter finds zero valid code entities. |
+
+---
+
+## DeepSeek Pricing
+
+DeepSeek uses **peak / off-peak pricing** across all tiers. Off-peak rates are exactly half of peak rates.
+
+> ⏰ **Peak hours (UTC):** `01:00–04:00` and `06:00–10:00`
+
+### Rate Table (USD per 1M tokens)
+
+| Tier | v4-flash input | v4-flash output | v4-flash cached | v4-pro input | v4-pro output | v4-pro cached |
+|---|---|---|---|---|---|---|
+| **Peak** | $0.44 | $1.32 | $0.014 | $1.32 | $3.96 | $0.044 |
+| **Off-peak** | $0.22 | $0.66 | $0.007 | $0.66 | $1.98 | $0.022 |
+
+The tool automatically resolves the correct tier at call time — no manual configuration needed.
+
+### Off-Peak Windows by Region
+
+> Offsets shown for **summer / daylight saving time (DST)**. In winter, US timezones shift 1 hour later; European zones shift 1 hour earlier — meaning off-peak windows shift accordingly.
+
+| Region | UTC offset (summer) | Peak local time | ✅ Off-peak local time |
+|---|---|---|---|
+| **EST** (New York, Miami) | UTC−5 | 8pm–11pm & 1am–5am | **5am–8pm** and 11pm–1am |
+| **CST** (Chicago, Dallas) | UTC−6 | 7pm–10pm & midnight–4am | **4am–7pm** and 10pm–midnight |
+| **PST** (Los Angeles, Seattle) | UTC−8 | 5pm–8pm & 10pm–2am | **2am–5pm** and 8pm–10pm |
+| **Ireland** (Dublin) | UTC+1 | 2am–5am & 7am–11am | **11am–2am** and 5am–7am |
+| **Spain** (Madrid) | UTC+2 | 3am–6am & 8am–noon | **noon–3am** and 6am–8am |
+| **Germany** (Berlin) | UTC+2 | 3am–6am & 8am–noon | **noon–3am** and 6am–8am |
+| **Norway** (Oslo) | UTC+2 | 3am–6am & 8am–noon | **noon–3am** and 6am–8am |
+
+**Key insight:** For US users working standard hours, most of the working day is already off-peak (cheaper). European users in GMT+2 zones benefit from off-peak pricing through most of the afternoon and evening.
 
 ---
 

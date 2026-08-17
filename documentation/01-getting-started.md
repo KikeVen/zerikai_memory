@@ -167,7 +167,7 @@ respecting .memignore."
 The skill flags violations with line numbers and proposes before/after diffs.
 Nothing is written without your confirmation.
 
-See [skills/embedding-docstring.md](skills/embedding-docstring.md) for the full
+See [skills/02-embedding-docstring.md](skills/02-embedding-docstring.md) for the full
 density checklist and format reference.
 
 ### Step 3 — Register the Project
@@ -188,7 +188,7 @@ to run multiple times.
 
 `scan_workspace` returns immediately and runs in the background. The assistant polls
 `scan_status` to track progress. Four concurrent workers parse code entities via
-tree-sitter, batch-upsert to ChromaDB (up to 300 per call), then synthesize the
+tree-sitter, batch-upsert to ChromaDB in a single call, then synthesize the
 9-section project brief.
 
 ### Force Brief Refresh (Only When Needed)

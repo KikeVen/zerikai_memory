@@ -111,7 +111,7 @@ You never call these directly. The agent calls them from your natural language.
 | `scan_status` | Progress of a running or completed scan: files, entities, errors, elapsed, brief status. |
 | `save_to_memory` | Manually saves a decision, fact, or note with an optional category tag. |
 | `list_memory` | Lists stored memories, optionally filtered by category. |
-| `query_memory` | Vector search + LLM synthesis (auto-routed). Returns inline `#file:line (distance)` citations. |
+| `query_memory` | Vector search + LLM synthesis (auto-routed). Returns plain-text answer with inline `#file:line | score` citations plus a `Sources:` block. |
 | `get_brief` | Retrieves the current project brief from `.brain/contexts/`. |
 | `update_brief` | Manually overwrites the markdown content of a project brief. No versioning. |
 
@@ -142,9 +142,10 @@ You never call these directly. The agent calls them from your natural language.
 
 ## Source Citations
 
-Every `query_memory` response includes inline `#file:line (distance)` citations —
-plain text, cross-IDE compatible, clickable in VS Code Copilot. This metadata is
-stored at scan time. No extra API cost.
+Every `query_memory` response includes inline `#file:line | score L2 or rerank`
+citations in the answer body plus a trailing `Sources:` block of
+`file:line — score (label)` lines — plain text, cross-IDE compatible, clickable in
+VS Code Copilot. This metadata is stored at scan time. No extra API cost.
 
 ---
 

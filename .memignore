@@ -10,6 +10,7 @@ scripts/
 blog/
 
 agent_rules/
+documentation/
 embedding-docstring/
 auxiliary_scripts/
 

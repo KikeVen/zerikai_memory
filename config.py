@@ -9,6 +9,7 @@ DB_PATH directory.
 """
 
 import ast
+import datetime
 import os
 from pathlib import Path
 
@@ -74,23 +75,78 @@ ENABLE_TOKEN_TRACKING = os.getenv(
 # registry, and cost reporting. Created on first _init_db() call.
 ZERIKAI_DB = DB_PATH / "zerikai.db"
 
-# DeepSeek pricing (USD per 1M tokens) - verified May 1, 2026
+# ─── DeepSeek Pricing (USD per 1M tokens) ────────────────────────────────────
 # Source: https://api-docs.deepseek.com/quick_start/pricing
+# Updated: 2026-08-17
+#
+# Peak hours (UTC): 01:00–04:00 and 06:00–10:00
+# Off-peak = all other hours. Off-peak rates are exactly half of peak.
+#
+# ⚠️  Pricing is now TIME-DEPENDENT. Use get_deepseek_pricing() at call time
+#     instead of referencing DEEPSEEK_PRICING directly.
+
+DEEPSEEK_PEAK_WINDOWS_UTC = [
+    (1, 4),   # 01:00–04:00 UTC
+    (6, 10),  # 06:00–10:00 UTC
+]
+
+# DeepSeek API pricing in USD per 1M tokens, keyed by model ('v4-flash',
+# 'v4-pro') with 'peak' and 'off_peak' tiers — off-peak is exactly half of
+# peak. Source: https://api-docs.deepseek.com/quick_start/pricing.
+# TIME-DEPENDENT: read via get_deepseek_pricing() at call time, not directly.
 DEEPSEEK_PRICING = {
     # deepseek-v4-flash (primary model for general synthesis)
     "v4-flash": {
-        "input": 0.14,       # Cache miss
-        "output": 0.28,
-        "cache_hit": 0.0028,  # 50x cheaper than cache miss (reduced 4/26/2026)
+        "peak": {
+            "input":     0.44,
+            "output":    1.32,
+            "cache_hit": 0.014,
+        },
+        "off_peak": {
+            "input":     0.22,
+            "output":    0.66,
+            "cache_hit": 0.007,
+        },
     },
     # deepseek-v4-pro (complex architectural queries)
     "v4-pro": {
-        "input": 0.435,      # Currently 75% off until 2026/05/31, then $1.74
-        "output": 0.87,      # Currently 75% off until 2026/05/31, then $3.48
-        "cache_hit": 0.003625,  # Currently 75% off until 2026/05/31, then $0.0145
+        "peak": {
+            "input":     1.32,
+            "output":    3.96,
+            "cache_hit": 0.044,
+        },
+        "off_peak": {
+            "input":     0.66,
+            "output":    1.98,
+            "cache_hit": 0.022,
+        },
     },
-    # NOTE: v4-pro pricing increases ~4x after May 31, 2026 when discount expires
 }
+
+
+def is_deepseek_peak_hour(utc_hour: int | None = None) -> bool:
+    """Return True if the given UTC hour falls within a DeepSeek peak window.
+    Defaults to current UTC hour if not provided. Use this to select the
+    correct pricing tier at the moment of the API call. Peak windows:
+    01:00–04:00 and 06:00–10:00 UTC. Pure, deterministic, no side effects.
+    """
+    if utc_hour is None:
+        utc_hour = datetime.datetime.now(datetime.timezone.utc).hour
+    return any(start <= utc_hour < end for start, end in DEEPSEEK_PEAK_WINDOWS_UTC)
+
+
+def get_deepseek_pricing(model_key: str, utc_hour: int | None = None) -> dict:
+    """Return the active pricing tier for a model based on current UTC time.
+    Falls back to v4-flash pricing if model_key is not recognised.
+    Args:
+        model_key:  'v4-flash' or 'v4-pro'
+        utc_hour:   Override UTC hour (0–23). Defaults to now(). Useful for
+                    testing or when the caller already has the request timestamp.
+    Returns:
+        dict with keys: input, output, cache_hit  (USD per 1M tokens)
+    """
+    tier = "peak" if is_deepseek_peak_hour(utc_hour) else "off_peak"
+    return DEEPSEEK_PRICING.get(model_key, DEEPSEEK_PRICING["v4-flash"])[tier]
 
 
 # Auto-routing thresholds

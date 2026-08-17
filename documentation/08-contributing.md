@@ -24,7 +24,7 @@ degrades retrieval for every query that touches that entity.
    ```
 2. Approve fixes per the skill's entity-by-entity approval loop.
 
-See [skills/embedding-docstring.md](skills/embedding-docstring.md) for the full
+See [skills/02-embedding-docstring.md](skills/02-embedding-docstring.md) for the full
 checklist and format reference.
 
 ### Key rules at a glance
