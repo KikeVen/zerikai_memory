@@ -422,11 +422,11 @@ Get-Content .brain\server.log -Wait -Tail 30
 
 ---
 
-To read more about the underlying design principles, architecture decisions, and future roadmap for Zerikai Memory, check out the [insight article](https://zerikai.com/blog/reduce-ai-ide-token-costs-with-zerikai-memory.html).
+To read more about the underlying design principles, architecture decisions, and future roadmap for Zerikai Memory, check out the [insight article](https://zerikai.github.io/blog/reduce-ai-ide-token-costs-with-zerikai-memory.html).
 
 ## License
 
-MIT License © [Zerikai](http://zerikai.com)
+MIT License © [Zerikai](http://zerikai.github.io)
 
 <p align="center">
 🛠️ <strong>Support:</strong> This project is provided as-is for personal use.
