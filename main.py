@@ -5,7 +5,9 @@ import logging
 import os
 import re
 import sqlite3
+import tempfile
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
@@ -14,7 +16,21 @@ from uuid import uuid4
 
 import tiktoken
 from chromadb import PersistentClient
-from mcp.server.fastmcp import FastMCP
+
+try:
+    from mcp.server.fastmcp import FastMCP
+except ImportError:
+    import importlib.metadata
+    import sys
+
+    version = importlib.metadata.version("mcp")
+    print(
+        f"ImportError: FastMCP not found in mcp.server.fastmcp. "
+        f"SDK version {version} detected. Expected <2.0.0.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
 from ollama import Client
 from openai import OpenAI
 
@@ -27,8 +43,6 @@ from config import (
     DEEPSEEK_BASE_URL,
     DEEPSEEK_MODEL_FAST,
     DEEPSEEK_MODEL_PRO,
-    get_deepseek_pricing,
-    is_deepseek_peak_hour,
     DEFAULT_MEMORY_MODE,
     ENABLE_DEEPSEEK_PRO,
     ENABLE_LEXICAL_RERANK,
@@ -42,6 +56,8 @@ from config import (
     SKIP_BARE_FILES,
     SYNTHESIZE_WITH_CLOUD,
     ZERIKAI_DB,
+    get_deepseek_pricing,
+    is_deepseek_peak_hour,
 )
 
 # Format string for every log line via the logging module. Layout:
@@ -78,6 +94,37 @@ log.info("Ollama host: %s", OLLAMA_HOST)
 log.info("Ollama model: %s", OLLAMA_MODEL)
 log.info("Default mode: %s", DEFAULT_MEMORY_MODE)
 log.info("=" * 60)
+
+
+# ---------------------------------------------------------------------------
+# Atomic file write helper
+# ---------------------------------------------------------------------------
+def _atomic_write_text(path: Path, content: str, retries: int = 3) -> None:
+    """Write text to a file atomically: temp file in same dir, then os.replace().
+    Guarantees the target is always old-or-new, never truncated — a crash
+    mid-write leaves the previous content intact. Atomic on Windows, macOS,
+    and Linux because the temp file lives in path.parent (same filesystem).
+    Retries on Windows sharing violations (destination open by another
+    process, e.g. an editor tab) with a brief backoff before giving up.
+    Side effect: writes to filesystem; cleans up the temp file on failure.
+    """
+    for attempt in range(retries):
+        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+                f.flush()
+                os.fsync(f.fileno())  # durability before rename
+            os.replace(tmp, path)  # atomic swap
+            return
+        except PermissionError:
+            os.unlink(tmp)
+            if attempt == retries - 1:
+                raise
+            time.sleep(0.1)  # brief backoff, then retry
+        except BaseException:
+            os.unlink(tmp)
+            raise
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +193,8 @@ def _init_db():
     if "estimated_cost_usd" not in columns:
         log.info("Migrating token_usage table: adding estimated_cost_usd column")
         conn.execute(
-            "ALTER TABLE token_usage ADD COLUMN estimated_cost_usd REAL DEFAULT 0.0")
+            "ALTER TABLE token_usage ADD COLUMN estimated_cost_usd REAL DEFAULT 0.0"
+        )
 
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_workspace_timestamp
@@ -211,34 +259,39 @@ def _track_token_usage(
 
         # Calculate cost: cache hits + cache misses + output
         cost = (
-            (cache_hit / 1_000_000) * pricing["cache_hit"] +
-            (cache_miss / 1_000_000) * pricing["input"] +
-            (completion_tokens / 1_000_000) * pricing["output"]
+            (cache_hit / 1_000_000) * pricing["cache_hit"]
+            + (cache_miss / 1_000_000) * pricing["input"]
+            + (completion_tokens / 1_000_000) * pricing["output"]
         )
 
         # Store in database
         with sqlite3.connect(str(ZERIKAI_DB), timeout=10) as conn:
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT INTO token_usage (
                     timestamp, workspace_id, operation, model,
                     prompt_tokens, completion_tokens,
                     cache_hit_tokens, cache_miss_tokens, estimated_cost_usd
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                datetime.now(timezone.utc).isoformat(),
-                workspace_id,
-                operation,
-                model,
-                prompt_tokens,
-                completion_tokens,
-                cache_hit,
-                cache_miss,
-                cost,
-            ))
+            """,
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    workspace_id,
+                    operation,
+                    model,
+                    prompt_tokens,
+                    completion_tokens,
+                    cache_hit,
+                    cache_miss,
+                    cost,
+                ),
+            )
 
         log.info(
             "Token tracking | workspace=%s | operation=%s | cost=$%.6f",
-            workspace_id, operation, cost,
+            workspace_id,
+            operation,
+            cost,
         )
 
     except Exception as exc:
@@ -252,6 +305,7 @@ _init_db()
 # ---------------------------------------------------------------------------
 # Workspace helpers
 # ---------------------------------------------------------------------------
+
 
 def _derive_workspace_id(workspace_path: str) -> tuple[str, str]:
     """Derive a stable workspace UUID from a filesystem path via zerikai.db sqlite3.
@@ -275,7 +329,7 @@ def _derive_workspace_id(workspace_path: str) -> tuple[str, str]:
     # - Symlinks/junctions (on Windows)
 
     # Step 1: Strip trailing slashes/backslashes
-    workspace_path = workspace_path.rstrip('/\\')
+    workspace_path = workspace_path.rstrip("/\\")
 
     # Step 2: Convert to absolute path using os.path.abspath
     if not os.path.isabs(workspace_path):
@@ -286,7 +340,7 @@ def _derive_workspace_id(workspace_path: str) -> tuple[str, str]:
     normalized_path = os.path.normcase(os.path.normpath(workspace_path))
 
     # Step 4: Use forward slashes as canonical separator
-    normalized_path = normalized_path.replace('\\', '/')
+    normalized_path = normalized_path.replace("\\", "/")
 
     # Step 5: Extract folder name for display name
     folder_name = os.path.basename(normalized_path)
@@ -301,7 +355,7 @@ def _derive_workspace_id(workspace_path: str) -> tuple[str, str]:
         # Try to find existing workspace by normalized path
         cursor.execute(
             "SELECT workspace_uuid, display_name FROM workspace_registry WHERE workspace_path = ?",
-            (normalized_path,)
+            (normalized_path,),
         )
         row = cursor.fetchone()
 
@@ -319,10 +373,13 @@ def _derive_workspace_id(workspace_path: str) -> tuple[str, str]:
         workspace_uuid = str(uuid4())
         created_at = datetime.now(timezone.utc).isoformat()
 
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO workspace_registry (workspace_uuid, workspace_path, display_name, created_at)
             VALUES (?, ?, ?, ?)
-        """, (workspace_uuid, normalized_path, display_name, created_at))
+        """,
+            (workspace_uuid, normalized_path, display_name, created_at),
+        )
 
         conn.commit()
         conn.close()
@@ -333,8 +390,7 @@ def _derive_workspace_id(workspace_path: str) -> tuple[str, str]:
         return (workspace_uuid, display_name)
 
     except Exception as exc:
-        log.error(
-            f"Workspace ID derivation failed for '{workspace_path}': {exc}")
+        log.error(f"Workspace ID derivation failed for '{workspace_path}': {exc}")
         # Fallback: generate ephemeral UUID (won't persist, but allows operation to continue)
         return (str(uuid4()), display_name)
 
@@ -359,7 +415,7 @@ def _resolve_workspace(identifier: str) -> tuple[str, str, str]:
         # Try exact UUID match
         cursor.execute(
             "SELECT workspace_uuid, display_name, workspace_path FROM workspace_registry WHERE workspace_uuid = ?",
-            (identifier,)
+            (identifier,),
         )
         row = cursor.fetchone()
 
@@ -367,7 +423,7 @@ def _resolve_workspace(identifier: str) -> tuple[str, str, str]:
         if not row and len(identifier) >= 8:
             cursor.execute(
                 "SELECT workspace_uuid, display_name, workspace_path FROM workspace_registry WHERE workspace_uuid LIKE ?",
-                (f"{identifier}%",)
+                (f"{identifier}%",),
             )
             row = cursor.fetchone()
 
@@ -375,7 +431,7 @@ def _resolve_workspace(identifier: str) -> tuple[str, str, str]:
         if not row:
             cursor.execute(
                 "SELECT workspace_uuid, display_name, workspace_path FROM workspace_registry WHERE display_name = ?",
-                (identifier,)
+                (identifier,),
             )
             row = cursor.fetchone()
 
@@ -418,7 +474,7 @@ def _truncate_for_brief(doc: str) -> str:
     result = " ".join(meaningful)
     dot = result.find(". ")
     if dot > 20:
-        result = result[:dot + 1]
+        result = result[: dot + 1]
     return result
 
 
@@ -469,7 +525,8 @@ async def _build_section(
         if not docs:
             with _db_lock:
                 fallback = collection.get(
-                    where={"category": "codebase"}, limit=pool_size)
+                    where={"category": "codebase"}, limit=pool_size
+                )
             docs = fallback.get("documents", [])
             metas = fallback.get("metadatas", [])
             distances = [1.0] * len(docs)
@@ -487,8 +544,7 @@ async def _build_section(
             text = doc.lower()
             src_file = (meta or {}).get("source_file", "").lower()
             hits = sum(
-                1 for t in query_terms
-                if t in name or t in text or t in src_file
+                1 for t in query_terms if t in name or t in text or t in src_file
             )
             score = (1 / dist) + (hits * LEXICAL_RERANK_WEIGHT)
             scored.append((score, doc, meta))
@@ -515,9 +571,11 @@ async def _build_section(
                 ds_client.chat.completions.create,
                 model=DEEPSEEK_MODEL_FAST,
                 messages=[
-                    {"role": "system",
-                        "content": "You are a senior software architect."},
-                    {"role": "user", "content": prompt}
+                    {
+                        "role": "system",
+                        "content": "You are a senior software architect.",
+                    },
+                    {"role": "user", "content": prompt},
                 ],
                 temperature=0,
                 max_tokens=2048,
@@ -526,7 +584,8 @@ async def _build_section(
             usage = getattr(response, "usage", None)
             if usage:
                 _track_token_usage(
-                    workspace_id, "brief_synthesis", DEEPSEEK_MODEL_FAST, usage)
+                    workspace_id, "brief_synthesis", DEEPSEEK_MODEL_FAST, usage
+                )
         else:
             result = await asyncio.to_thread(
                 ol_client.generate,
@@ -544,7 +603,9 @@ async def _build_section(
         return (heading, f"(Section generation failed: {exc})")
 
 
-async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud: bool = True) -> str:
+async def _synthesize_deep_brief(
+    workspace_id: str, display_name: str, use_cloud: bool = True
+) -> str:
     """Build a 9-section project brief via parallel ChromaDB queries.
     Fires all section-specific queries via asyncio.gather, delegating
     each to _build_section. Routes to DeepSeek or Ollama based on
@@ -556,15 +617,20 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
         use_cloud: If True, uses DeepSeek for higher quality (small cost).
                    If False, uses Ollama (free, may include noise).
     """
-    log.info("_synthesize_deep_brief | Starting iterative synthesis for %s (%s)",
-             display_name, workspace_id)
+    log.info(
+        "_synthesize_deep_brief | Starting iterative synthesis for %s (%s)",
+        display_name,
+        workspace_id,
+    )
     collection = _get_collection(workspace_id)
 
     # Check if we have any codebase data at all
     with _db_lock:
         check = collection.get(where={"category": "codebase"}, limit=1)
     if not check.get("documents"):
-        return f"# Project Brief: {display_name}\n\nNo codebase files found during scan."
+        return (
+            f"# Project Brief: {display_name}\n\nNo codebase files found during scan."
+        )
 
     # Section definitions with semantic queries and format-guided prompts
     sections = [
@@ -749,13 +815,14 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
         """Wrapper to gate Ollama calls via semaphore during local synthesis."""
         if not use_cloud:
             async with ollama_semaphore:
-                return await _build_section(s, collection, display_name, use_cloud, workspace_id)
-        return await _build_section(s, collection, display_name, use_cloud, workspace_id)
+                return await _build_section(
+                    s, collection, display_name, use_cloud, workspace_id
+                )
+        return await _build_section(
+            s, collection, display_name, use_cloud, workspace_id
+        )
 
-    tasks = [
-        _build_section_safe(s)
-        for s in sections
-    ]
+    tasks = [_build_section_safe(s) for s in sections]
     results = await asyncio.gather(*tasks)
 
     brief_parts = [f"# Project Brief: {display_name}\n"]
@@ -771,6 +838,7 @@ async def _synthesize_deep_brief(workspace_id: str, display_name: str, use_cloud
 # Background scan progress tracking
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ScanProgress:
     """Tracks progress of a background workspace scan. Written by
@@ -779,6 +847,7 @@ class ScanProgress:
     Read by scan_status for user-facing progress reports. Plain dataclass
     — no methods, no side effects beyond field mutation by callers.
     """
+
     workspace_id: str
     display_name: str
     total_files: int
@@ -787,7 +856,8 @@ class ScanProgress:
     skipped: int = 0
     errors: int = 0
     started_at: float = field(
-        default_factory=lambda: datetime.now(timezone.utc).timestamp())
+        default_factory=lambda: datetime.now(timezone.utc).timestamp()
+    )
     completed: bool = False
     brief_status: str = "pending"  # pending, running, complete, failed
 
@@ -810,16 +880,17 @@ async def _background_brief_synthesis(
     via asyncio.create_task — no await, no return value.
     """
     try:
-        new_brief = await _synthesize_deep_brief(workspace_id, display_name, use_cloud=SYNTHESIZE_WITH_CLOUD)
-        context_file.write_text(new_brief, encoding="utf-8")
+        new_brief = await _synthesize_deep_brief(
+            workspace_id, display_name, use_cloud=SYNTHESIZE_WITH_CLOUD
+        )
+        _atomic_write_text(context_file, new_brief)
         if progress:
             progress.brief_status = "Complete"
         log.info("_background_brief_synthesis | brief saved for %s", display_name)
     except Exception as exc:
         if progress:
             progress.brief_status = "Failed"
-        log.error("_background_brief_synthesis | failed for %s: %s",
-                  display_name, exc)
+        log.error("_background_brief_synthesis | failed for %s: %s", display_name, exc)
 
 
 def _get_collection(workspace_id: str):
@@ -886,7 +957,7 @@ def _build_system_message(workspace_id: str) -> str:
         "3. NO HALLUCINATION: Do not invent parameters, return types, or implementation details. Verify every claim against the context.\n"
         "4. INLINE CITATIONS: When you state a fact drawn from a specific source, cite it inline immediately "
         "after the claim using the format: #file:line | score L2 or rerank\n"
-        "   Example: \"The brief is loaded via _load_project_context (#main.py:810 | 0.72 L2).\"\n"
+        '   Example: "The brief is loaded via _load_project_context (#main.py:810 | 0.72 L2)."\n'
         "   Only cite sources that are present in the provided context. Do not fabricate file paths, line numbers, or scores.\n\n"
         "=== PROJECT BRIEF ===\n"
     )
@@ -914,11 +985,32 @@ def _build_system_message(workspace_id: str) -> str:
 
 # Text extensions we are willing to read and summarise.
 _TEXT_EXTENSIONS = {
-    ".py", ".pyw", ".js", ".ts", ".jsx", ".tsx",
-    ".md", ".txt", ".rst",
-    ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg",
-    ".html", ".css", ".sql", ".sh", ".env",
-    ".java", ".go", ".rs", ".c", ".cpp", ".h",
+    ".py",
+    ".pyw",
+    ".js",
+    ".ts",
+    ".jsx",
+    ".tsx",
+    ".md",
+    ".txt",
+    ".rst",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".html",
+    ".css",
+    ".sql",
+    ".sh",
+    ".env",
+    ".java",
+    ".go",
+    ".rs",
+    ".c",
+    ".cpp",
+    ".h",
 }
 
 # Never read files larger than this (bytes).
@@ -926,17 +1018,17 @@ _MAX_FILE_BYTES = 200_000  # Increased from 100KB to 200KB to include main.py
 
 # Files larger than this (in lines) are split into chunks before indexing.
 # Prevents DeepSeek from truncating structured extraction on large files.
-_CHUNK_LINE_THRESHOLD = 300   # lines — files above this get chunked
+_CHUNK_LINE_THRESHOLD = 300  # lines — files above this get chunked
 
 # Lines per chunk when _CHUNK_LINE_THRESHOLD is exceeded. Controls the
 # context window size fed to the LLM summarizer (DeepSeek or Ollama).
 # Typical values 200–500; must stay below the model's context limit.
-_CHUNK_SIZE_LINES = 250   # lines per chunk (with overlap)
+_CHUNK_SIZE_LINES = 250  # lines per chunk (with overlap)
 
 # Overlap lines shared between adjacent chunks for context continuity.
 # Keeps entity definitions that straddle a chunk boundary retrievable.
 # Must be smaller than _CHUNK_SIZE_LINES; typical values 10–50.
-_CHUNK_OVERLAP_LINES = 20    # overlap between chunks for context continuity
+_CHUNK_OVERLAP_LINES = 20  # overlap between chunks for context continuity
 
 
 def _load_memignore(workspace_path: str) -> list[str]:
@@ -975,7 +1067,9 @@ def _is_ignored(file_path: Path, workspace_root: Path, patterns: list[str]) -> b
         if any(fnmatch.fnmatch(part, p) for part in parts):
             return True
         # 2. Match against full relative path or filename
-        if fnmatch.fnmatch(rel_posix, pattern) or fnmatch.fnmatch(file_path.name, pattern):
+        if fnmatch.fnmatch(rel_posix, pattern) or fnmatch.fnmatch(
+            file_path.name, pattern
+        ):
             return True
 
     return False
@@ -1011,6 +1105,7 @@ def _chunk_file_content(
 # Auto-routing logic
 # ---------------------------------------------------------------------------
 
+
 def _should_use_cloud(user_query: str, use_cloud: bool | None) -> bool:
     """Route queries to DeepSeek or Ollama via a 4-step priority chain.
     Priority: explicit use_cloud override → CLOUD_ESCALATION_KEYWORDS
@@ -1044,8 +1139,14 @@ def _select_model(user_query: str) -> str:
     if not ENABLE_DEEPSEEK_PRO:
         return DEEPSEEK_MODEL_FAST
 
-    pro_triggers = {"architect", "architecture",
-                    "design", "tradeoff", "trade-off", "audit"}
+    pro_triggers = {
+        "architect",
+        "architecture",
+        "design",
+        "tradeoff",
+        "trade-off",
+        "audit",
+    }
     if any(w in pro_triggers for w in user_query.lower().split()):
         log.info("Model → deepseek-v4-pro (reasoning query)")
         return DEEPSEEK_MODEL_PRO
@@ -1057,6 +1158,7 @@ def _select_model(user_query: str) -> str:
 # ---------------------------------------------------------------------------
 # Tool: init_workspace
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool()
 async def init_workspace(workspace_path: str) -> str:
@@ -1078,24 +1180,25 @@ async def init_workspace(workspace_path: str) -> str:
             f"Workspace already registered: `{display_name}`\n"
             f"Workspace ID: `{workspace_id[:8]}`\n\n"
             f"Use this ID with other tools:\n"
-            f"  scan_workspace(workspace=\"{workspace_id[:8]}\")\n"
-            f"  query_memory(workspace=\"{workspace_id[:8]}\", user_query=\"...\")"
+            f'  scan_workspace(workspace="{workspace_id[:8]}")\n'
+            f'  query_memory(workspace="{workspace_id[:8]}", user_query="...")'
         )
 
     template = f"{UNINITIALIZED_MARKER}\n# Project Brief — {display_name}\n\n(Waiting for initial scan... run `scan_workspace` to auto-generate the architecture brief. Generation takes about 20 seconds.)"
-    context_file.write_text(template, encoding="utf-8")
+    _atomic_write_text(context_file, template)
 
     return (
         f"Workspace registered: `{display_name}`\n"
         f"Workspace ID: `{workspace_id[:8]}`\n\n"
         f"Next step — copy/paste this into your chat to start scanning:\n"
-        f"  scan_workspace(workspace=\"{workspace_id[:8]}\")"
+        f'  scan_workspace(workspace="{workspace_id[:8]}")'
     )
 
 
 # ---------------------------------------------------------------------------
 # Tool: save_to_memory
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool()
 async def save_to_memory(
@@ -1118,8 +1221,7 @@ async def save_to_memory(
         source_id: Optional unique identifier (like a file path) to prevent duplicates on re-scans.
     """
     try:
-        workspace_id, display_name, workspace_path = _resolve_workspace(
-            workspace)
+        workspace_id, display_name, workspace_path = _resolve_workspace(workspace)
 
         # -------------------------------------------------------------------
         # tree-sitter code extraction (deterministic, zero API cost)
@@ -1130,8 +1232,7 @@ async def save_to_memory(
             try:
                 entities = extract_entities(content, source_id or "")
             except Exception as exc:
-                log.warning("tree-sitter parse failed for %s: %s",
-                            source_id, exc)
+                log.warning("tree-sitter parse failed for %s: %s", source_id, exc)
                 entities = []
 
             if entities:
@@ -1139,8 +1240,7 @@ async def save_to_memory(
                 saved_count = 0
                 for entity in entities:
                     doc_id = hashlib.md5(
-                        f"{workspace_id}:{source_id or 'snippet'}:{entity.name}:{entity.lineno}"
-                        .encode()
+                        f"{workspace_id}:{source_id or 'snippet'}:{entity.name}:{entity.lineno}".encode()
                     ).hexdigest()
                     is_manual = (source_id or "").startswith("chat/")
 
@@ -1197,7 +1297,8 @@ async def save_to_memory(
             chunk_note = (
                 "This is a partial chunk of a larger file. "
                 "Extract only what is visible in this chunk.\n\n"
-                if is_chunk else ""
+                if is_chunk
+                else ""
             )
             index_prompt = (
                 f"You are a code indexer. Extract a structured index from the Python "
@@ -1289,8 +1390,9 @@ async def save_to_memory(
             # Track token usage
             usage = getattr(response, "usage", None)
             if usage:
-                _track_token_usage(workspace_id, "file_scan",
-                                   DEEPSEEK_MODEL_FAST, usage)
+                _track_token_usage(
+                    workspace_id, "file_scan", DEEPSEEK_MODEL_FAST, usage
+                )
         else:
             # Use Ollama for "hybrid" and "local" modes
             result = await asyncio.to_thread(
@@ -1302,8 +1404,7 @@ async def save_to_memory(
 
         # Use a deterministic ID if source_id is provided so re-scans overwrite instead of duplicate
         if source_id:
-            doc_id = hashlib.md5(
-                f"{workspace_id}:{source_id}".encode()).hexdigest()
+            doc_id = hashlib.md5(f"{workspace_id}:{source_id}".encode()).hexdigest()
         else:
             doc_id = str(uuid4())
 
@@ -1311,19 +1412,24 @@ async def save_to_memory(
             collection = _get_collection(workspace_id)
             collection.upsert(
                 documents=[summary],
-                metadatas=[{
-                    "category": category,
-                    "workspace": workspace_id,
-                    "source_file": source_id or "",   # preserves filename through Ollama summarisation
-                    "line_count": content.count("\n"),
-                    "last_modified": last_modified or "",
-                }],
+                metadatas=[
+                    {
+                        "category": category,
+                        "workspace": workspace_id,
+                        "source_file": source_id
+                        or "",  # preserves filename through Ollama summarisation
+                        "line_count": content.count("\n"),
+                        "last_modified": last_modified or "",
+                    }
+                ],
                 ids=[doc_id],
             )
 
         log.info(
             "Memory saved | workspace=%s | category=%s | preview=%.60s",
-            workspace_id, category, summary,
+            workspace_id,
+            category,
+            summary,
         )
         return f"[{workspace_id}] Archived ({category}): {summary[:100]}..."
 
@@ -1335,6 +1441,7 @@ async def save_to_memory(
 # ---------------------------------------------------------------------------
 # Tool: query_memory
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool()
 async def query_memory(
@@ -1360,18 +1467,22 @@ async def query_memory(
         return "Query cannot be empty. What would you like to know about the codebase?"
 
     try:
-        workspace_id, display_name, workspace_path = _resolve_workspace(
-            workspace)
+        workspace_id, display_name, workspace_path = _resolve_workspace(workspace)
         collection = _get_collection(workspace_id)
 
         # 1. Semantic retrieval — scoped to this workspace's collection
         # Strip source-table request phrases from the search query so DeepSeek
         # doesn't try to acknowledge/deny a table it can't see (we prepend it).
         import re as _re
-        search_query = _re.sub(
-            r'([. ]*[Ss]how (me )?(the )?([Ss]ources?( table| chart)?)[. ]*)',
-            '', user_query
-        ).strip() or user_query
+
+        search_query = (
+            _re.sub(
+                r"([. ]*[Ss]how (me )?(the )?([Ss]ources?( table| chart)?)[. ]*)",
+                "",
+                user_query,
+            ).strip()
+            or user_query
+        )
         where = {"category": category} if category else None
         results = collection.query(
             query_texts=[search_query],
@@ -1385,8 +1496,11 @@ async def query_memory(
 
         # Check if anything was retrieved
         if not docs:
-            log.info("query_memory | no documents retrieved for workspace=%s query=%r",
-                     workspace_id, user_query)
+            log.info(
+                "query_memory | no documents retrieved for workspace=%s query=%r",
+                workspace_id,
+                user_query,
+            )
             context = "No specific code snippets found in memory."
             relevant_for_evidence = []
         else:
@@ -1403,14 +1517,18 @@ async def query_memory(
                 best = min(distances)
                 log.info(
                     "query_memory | no results below threshold (best dist=%.3f) workspace=%s query=%r",
-                    best, workspace_id, user_query,
+                    best,
+                    workspace_id,
+                    user_query,
                 )
                 context = "No specific code snippets found below distance threshold."
                 relevant_for_evidence = []
             else:
                 log.info(
                     "query_memory | %d/%d results passed threshold for workspace=%s",
-                    len(relevant), len(docs), workspace_id,
+                    len(relevant),
+                    len(docs),
+                    workspace_id,
                 )
 
                 # Lexical re-ranking — reorder by keyword-overlap boost.
@@ -1419,20 +1537,20 @@ async def query_memory(
                 # genuinely closer semantic results.
                 if ENABLE_LEXICAL_RERANK:
                     query_terms = set(user_query.lower().split())
-                    
+
                     reranked_relevant = []
                     for doc, meta, dist in relevant:
                         name = (meta or {}).get("name", "").lower()
                         text = doc.lower()
-                        hits = sum(
-                            1 for t in query_terms if t in name or t in text)
+                        hits = sum(1 for t in query_terms if t in name or t in text)
                         # Guard against divide-by-zero for exact vector matches (dist=0)
                         inv_dist = 1.0 / dist if dist > 1e-6 else 1000000.0
                         rerank_score = inv_dist + (hits * LEXICAL_RERANK_WEIGHT)
                         reranked_relevant.append((doc, meta, dist, rerank_score))
 
                     reranked_relevant = sorted(
-                        reranked_relevant, key=lambda item: item[3], reverse=True)
+                        reranked_relevant, key=lambda item: item[3], reverse=True
+                    )
                     log.info(
                         "query_memory | lexical re-rank applied, top result: %s",
                         (reranked_relevant[0][1] or {}).get("name", "unknown"),
@@ -1440,8 +1558,9 @@ async def query_memory(
                     relevant_for_evidence = reranked_relevant
                 else:
                     # Add a placeholder for the rerank score when it's disabled
-                    relevant_for_evidence = [(doc, meta, dist, None) for doc, meta, dist in relevant]
-
+                    relevant_for_evidence = [
+                        (doc, meta, dist, None) for doc, meta, dist in relevant
+                    ]
 
                 # Final number of reranked results passed to synthesis — kept separate from
                 # FETCH_CAP (which only controls the pre-rerank candidate pool size) to cap
@@ -1471,7 +1590,11 @@ async def query_memory(
                     evidence_list.append(evidence_item)
 
                     score, score_label = _get_score_tuple(evidence_item)
-                    score_str = f"{score:.2f} {score_label}" if score is not None else "no score"
+                    score_str = (
+                        f"{score:.2f} {score_label}"
+                        if score is not None
+                        else "no score"
+                    )
 
                     location_label = ""
                     if src_file and lineno:
@@ -1480,7 +1603,9 @@ async def query_memory(
                             label = f"{name} ({entity_type})"
                             if parent:
                                 label += f" in {parent}"
-                            location_label = f"[{location}] {label} — score: {score_str}"
+                            location_label = (
+                                f"[{location}] {label} — score: {score_str}"
+                            )
                         else:
                             location_label = f"[{location}] — score: {score_str}"
 
@@ -1511,7 +1636,11 @@ async def query_memory(
                 loc = ev.get("source_file", "unknown")
                 if ev.get("lineno") not in (None, ""):
                     loc += f":{ev['lineno']}"
-                line = f"* {loc} — {score:.2f} ({score_label})" if isinstance(score, (int, float)) else f"* {loc} (no score)"
+                line = (
+                    f"* {loc} — {score:.2f} ({score_label})"
+                    if isinstance(score, (int, float))
+                    else f"* {loc} (no score)"
+                )
                 note = ev.get("note")
                 if note:
                     line += f" — {note}"
@@ -1519,7 +1648,9 @@ async def query_memory(
             return "\n".join(lines)
 
         # Final return — plain string again, no JSON
-        return answer + _format_sources_block(evidence_list if 'evidence_list' in locals() else [])
+        return answer + _format_sources_block(
+            evidence_list if "evidence_list" in locals() else []
+        )
 
     except Exception as exc:
         log.error("query_memory failed: %s", exc)
@@ -1565,19 +1696,24 @@ async def _query_deepseek(context: str, user_query: str, workspace_id: str) -> s
     if not content:
         log.warning(
             "_query_deepseek | empty response | model=%s | finish_reason=%s",
-            model, choice.finish_reason
+            model,
+            choice.finish_reason,
         )
 
     # Log cache performance — watch this to verify prefix stability is working
     usage = getattr(response, "usage", None)
     if usage:
-        hit = getattr(usage, "prompt_cache_hit_tokens",  0)
+        hit = getattr(usage, "prompt_cache_hit_tokens", 0)
         miss = getattr(usage, "prompt_cache_miss_tokens", 0)
         total = hit + miss
         hit_pct = round(hit / total * 100) if total else 0
         log.info(
             "DeepSeek cache | workspace=%s | model=%s | hit=%d | miss=%d | hit_rate=%d%%",
-            workspace_id, model, hit, miss, hit_pct,
+            workspace_id,
+            model,
+            hit,
+            miss,
+            hit_pct,
         )
 
         # Track token usage to SQLite
@@ -1615,6 +1751,7 @@ async def _query_ollama(context: str, user_query: str, workspace_id: str) -> str
 # ---------------------------------------------------------------------------
 # Tool: list_memory
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool()
 async def list_memory(
@@ -1660,6 +1797,7 @@ async def list_memory(
 # Tool: list_workspaces
 # ---------------------------------------------------------------------------
 
+
 @mcp.tool()
 async def list_workspaces() -> str:
     """MCP tool (FastMCP @mcp.tool()): list all known workspaces from
@@ -1692,7 +1830,9 @@ async def list_workspaces() -> str:
         uuid_to_name = {}
         for wid in workspace_ids:
             cursor.execute(
-                "SELECT display_name FROM workspace_registry WHERE workspace_uuid = ?", (wid,))
+                "SELECT display_name FROM workspace_registry WHERE workspace_uuid = ?",
+                (wid,),
+            )
             row = cursor.fetchone()
             if row:
                 uuid_to_name[wid] = row["display_name"]
@@ -1731,6 +1871,7 @@ async def list_workspaces() -> str:
 # Tool: resolve_workspace
 # ---------------------------------------------------------------------------
 
+
 @mcp.tool()
 async def resolve_workspace(identifier: str) -> str:
     """MCP tool (FastMCP @mcp.tool()): resolve a workspace identifier to
@@ -1754,7 +1895,7 @@ async def resolve_workspace(identifier: str) -> str:
         # Try exact UUID match first
         cursor.execute(
             "SELECT workspace_uuid, display_name, workspace_path FROM workspace_registry WHERE workspace_uuid = ?",
-            (identifier,)
+            (identifier,),
         )
         row = cursor.fetchone()
 
@@ -1762,7 +1903,7 @@ async def resolve_workspace(identifier: str) -> str:
         if not row and len(identifier) >= 8:
             cursor.execute(
                 "SELECT workspace_uuid, display_name, workspace_path FROM workspace_registry WHERE workspace_uuid LIKE ?",
-                (f"{identifier}%",)
+                (f"{identifier}%",),
             )
             row = cursor.fetchone()
 
@@ -1770,7 +1911,7 @@ async def resolve_workspace(identifier: str) -> str:
         if not row:
             cursor.execute(
                 "SELECT workspace_uuid, display_name, workspace_path FROM workspace_registry WHERE display_name = ?",
-                (identifier,)
+                (identifier,),
             )
             row = cursor.fetchone()
 
@@ -1800,6 +1941,7 @@ async def resolve_workspace(identifier: str) -> str:
 # Tool: update_brief
 # ---------------------------------------------------------------------------
 
+
 @mcp.tool()
 async def update_brief(workspace: str, new_content: str) -> str:
     """MCP tool (FastMCP @mcp.tool()): replace the project brief in
@@ -1816,7 +1958,7 @@ async def update_brief(workspace: str, new_content: str) -> str:
         context_dir = Path(DB_PATH) / "contexts"
         context_file = context_dir / f"{workspace_id}.md"
 
-        context_file.write_text(new_content, encoding="utf-8")
+        _atomic_write_text(context_file, new_content)
         return f"Brief updated for workspace `{display_name}`."
     except Exception as exc:
         log.error("update_brief failed: %s", exc)
@@ -1826,6 +1968,7 @@ async def update_brief(workspace: str, new_content: str) -> str:
 # ---------------------------------------------------------------------------
 # Tool: get_brief
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool()
 async def get_brief(workspace: str) -> str:
@@ -1837,8 +1980,7 @@ async def get_brief(workspace: str) -> str:
         workspace: Workspace identifier (UUID, short UUID, or display name).
     """
     try:
-        workspace_id, display_name, workspace_path = _resolve_workspace(
-            workspace)
+        workspace_id, display_name, workspace_path = _resolve_workspace(workspace)
         context_dir = Path(DB_PATH) / "contexts"
         context_file = context_dir / f"{workspace_id}.md"
 
@@ -1858,6 +2000,7 @@ async def get_brief(workspace: str) -> str:
 # ---------------------------------------------------------------------------
 # Background scan worker
 # ---------------------------------------------------------------------------
+
 
 async def _background_scan(
     workspace_id: str,
@@ -1902,16 +2045,16 @@ async def _background_scan(
         progress.skipped = skipped
         log.info(
             "_background_scan | %d files queued, %d skipped by filters",
-            len(files), skipped,
+            len(files),
+            skipped,
         )
 
         # ── Phase 2: Concurrent processing ───────────────────────────
         _parse_sem = asyncio.Semaphore(4)  # limit concurrent file parsing
-        _llm_sem = asyncio.Semaphore(2)    # limit concurrent LLM calls
+        _llm_sem = asyncio.Semaphore(2)  # limit concurrent LLM calls
 
         # Per-worker result: entities to batch-write, or saved/skipped/error status
-        EntityBatch = tuple[list[str], list[str],
-                            list[dict]]  # ids, docs, metas
+        EntityBatch = tuple[list[str], list[str], list[dict]]  # ids, docs, metas
         WorkerResult = tuple[Path, str, int, EntityBatch | None]
         #                           rel_path, status, entity_count, optional batch
 
@@ -1942,7 +2085,8 @@ async def _background_scan(
                     except Exception as exc:
                         log.warning(
                             "_background_scan | tree-sitter parse failed for %s: %s",
-                            rel_path, exc,
+                            rel_path,
+                            exc,
                         )
                         entities = []
 
@@ -1952,8 +2096,7 @@ async def _background_scan(
                         batch_metas: list[dict] = []
                         for entity in entities:
                             doc_id = hashlib.md5(
-                                f"{workspace_id}:{rel_path}:{entity.name}:{entity.lineno}"
-                                .encode()
+                                f"{workspace_id}:{rel_path}:{entity.name}:{entity.lineno}".encode()
                             ).hexdigest()
                             meta = {
                                 "category": category,
@@ -1976,13 +2119,19 @@ async def _background_scan(
                             batch_ids.append(doc_id)
                             batch_docs.append(entity.document_text)
                             batch_metas.append(meta)
-                        return (fp, "entities", len(entities), (batch_ids, batch_docs, batch_metas))
+                        return (
+                            fp,
+                            "entities",
+                            len(entities),
+                            (batch_ids, batch_docs, batch_metas),
+                        )
 
                 # Skip bare files when configured
                 if ext in SKIP_BARE_FILES:
                     log.info(
                         "_background_scan | skipped bare %s (no entities): %s",
-                        ext, rel_path,
+                        ext,
+                        rel_path,
                     )
                     return (fp, "skipped", 0, None)
 
@@ -1992,8 +2141,7 @@ async def _background_scan(
                 for chunk_idx, chunk_text in enumerate(chunks):
                     if total_chunks > 1:
                         chunk_header = (
-                            f"### {rel_path} "
-                            f"[chunk {chunk_idx + 1}/{total_chunks}]\n"
+                            f"### {rel_path} [chunk {chunk_idx + 1}/{total_chunks}]\n"
                         )
                     else:
                         chunk_header = f"### {rel_path}\n"
@@ -2016,7 +2164,9 @@ async def _background_scan(
                         scanned_ids.add(doc_id)
                     log.info(
                         "_background_scan | saved: %s [chunk %d/%d]",
-                        rel_path, chunk_idx + 1, total_chunks,
+                        rel_path,
+                        chunk_idx + 1,
+                        total_chunks,
                     )
                 return (fp, "saved", 0, None)
 
@@ -2074,7 +2224,8 @@ async def _background_scan(
                 )
             log.info(
                 "_background_scan | batch upserted %d entities from %d files",
-                len(all_ids), saved,
+                len(all_ids),
+                saved,
             )
 
         progress.scanned = saved + errors
@@ -2086,8 +2237,11 @@ async def _background_scan(
         if stale_ids:
             with _db_lock:
                 collection.delete(ids=stale_ids)
-            log.info("_background_scan | purged %d stale memories for %s",
-                     len(stale_ids), workspace_id)
+            log.info(
+                "_background_scan | purged %d stale memories for %s",
+                len(stale_ids),
+                workspace_id,
+            )
 
         # ── Phase 5: Brief synthesis ──────────────────────────────────
         context_dir = Path(DB_PATH) / "contexts"
@@ -2096,8 +2250,7 @@ async def _background_scan(
         trigger_brief = False
 
         if context_file.exists():
-            current_text = context_file.read_text(
-                encoding="utf-8", errors="ignore")
+            current_text = context_file.read_text(encoding="utf-8", errors="ignore")
             if force_refresh_brief or (UNINITIALIZED_MARKER in current_text):
                 trigger_brief = True
                 brief_status = "In progress (background, about 20 seconds)"
@@ -2109,21 +2262,27 @@ async def _background_scan(
             context_dir.mkdir(parents=True, exist_ok=True)
             progress.brief_status = "In progress (background, about 20 seconds)"
             log.info(
-                "_background_scan | triggering brief synthesis for %s", display_name)
-            asyncio.create_task(_background_brief_synthesis(
-                workspace_id, display_name, context_file, progress))
+                "_background_scan | triggering brief synthesis for %s", display_name
+            )
+            asyncio.create_task(
+                _background_brief_synthesis(
+                    workspace_id, display_name, context_file, progress
+                )
+            )
 
         progress.completed = True
         progress.brief_status = brief_status
 
         log.info(
             "_background_scan | complete for %s — saved=%d skipped=%d errors=%d",
-            display_name, saved, progress.skipped, errors,
+            display_name,
+            saved,
+            progress.skipped,
+            errors,
         )
 
     except Exception as exc:
-        log.error("_background_scan | fatal error for %s: %s",
-                  display_name, exc)
+        log.error("_background_scan | fatal error for %s: %s", display_name, exc)
         progress.completed = True
         progress.brief_status = "failed"
         progress.errors += 1
@@ -2132,6 +2291,7 @@ async def _background_scan(
 # ---------------------------------------------------------------------------
 # Tool: scan_workspace
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool()
 async def scan_workspace(
@@ -2159,7 +2319,8 @@ async def scan_workspace(
     patterns = _load_memignore(workspace_path)
     log.info(
         "scan_workspace | root=%s | memignore patterns=%d",
-        workspace_path, len(patterns),
+        workspace_path,
+        len(patterns),
     )
 
     collection = _get_collection(workspace_id)
@@ -2182,17 +2343,19 @@ async def scan_workspace(
     )
     _scans[workspace_id] = progress
 
-    task = asyncio.create_task(_background_scan(
-        workspace_id=workspace_id,
-        display_name=display_name,
-        workspace_root=workspace_root,
-        patterns=patterns,
-        collection=collection,
-        old_ids=old_ids,
-        category=category,
-        progress=progress,
-        force_refresh_brief=force_refresh_brief,
-    ))
+    task = asyncio.create_task(
+        _background_scan(
+            workspace_id=workspace_id,
+            display_name=display_name,
+            workspace_root=workspace_root,
+            patterns=patterns,
+            collection=collection,
+            old_ids=old_ids,
+            category=category,
+            progress=progress,
+            force_refresh_brief=force_refresh_brief,
+        )
+    )
     _scan_tasks[workspace_id] = task
 
     return (
@@ -2200,7 +2363,7 @@ async def scan_workspace(
         f"Workspace ID: `{workspace_id[:8]}`\n"
         f"- Files queued: {total_files}\n"
         f"- To check progress, copy/paste this into your chat:\n"
-        f"  scan_status(workspace=\"{workspace_id[:8]}\")\n"
+        f'  scan_status(workspace="{workspace_id[:8]}")\n'
         f"- When scan finishes, the brief auto-generates — then query_memory as usual."
     )
 
@@ -2208,6 +2371,7 @@ async def scan_workspace(
 # ---------------------------------------------------------------------------
 # Tool: get_token_usage
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool()
 async def get_token_usage(
@@ -2237,8 +2401,7 @@ async def get_token_usage(
         workspace_display_name = None
 
         if workspace:
-            workspace_id, workspace_display_name, _ = _resolve_workspace(
-                workspace)
+            workspace_id, workspace_display_name, _ = _resolve_workspace(workspace)
             conditions.append("workspace_id = ?")
             params.append(workspace_id)
 
@@ -2273,10 +2436,15 @@ async def get_token_usage(
             return "No token usage data found for the specified criteria."
 
         total_cache = result["total_cache_hits"] + result["total_cache_misses"]
-        cache_hit_rate = (result["total_cache_hits"] /
-                          total_cache * 100) if total_cache > 0 else 0
+        cache_hit_rate = (
+            (result["total_cache_hits"] / total_cache * 100) if total_cache > 0 else 0
+        )
 
-        scope = f"Workspace: {workspace_display_name}" if workspace_display_name else "All Workspaces"
+        scope = (
+            f"Workspace: {workspace_display_name}"
+            if workspace_display_name
+            else "All Workspaces"
+        )
         date_range = []
         if start_date:
             date_range.append(f"from {start_date}")
@@ -2305,6 +2473,7 @@ async def get_token_usage(
 # Tool: get_cache_stats
 # ---------------------------------------------------------------------------
 
+
 @mcp.tool()
 async def get_cache_stats(workspace: str | None = None) -> str:
     """MCP tool (FastMCP @mcp.tool()): show DeepSeek cache hit/miss rates
@@ -2326,8 +2495,7 @@ async def get_cache_stats(workspace: str | None = None) -> str:
         workspace_display_name = None
 
         if workspace:
-            workspace_id, workspace_display_name, _ = _resolve_workspace(
-                workspace)
+            workspace_id, workspace_display_name, _ = _resolve_workspace(workspace)
             conditions.append("workspace_id = ?")
             params.append(workspace_id)
 
@@ -2353,7 +2521,11 @@ async def get_cache_stats(workspace: str | None = None) -> str:
         if not results:
             return "No cache statistics available."
 
-        scope = f"Workspace: {workspace_display_name}" if workspace_display_name else "All Workspaces"
+        scope = (
+            f"Workspace: {workspace_display_name}"
+            if workspace_display_name
+            else "All Workspaces"
+        )
 
         lines = [
             f"Cache Statistics\n{scope}\n",
@@ -2381,6 +2553,7 @@ async def get_cache_stats(workspace: str | None = None) -> str:
 # ---------------------------------------------------------------------------
 # Tool: get_cost_report
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool()
 async def get_cost_report(
@@ -2418,8 +2591,7 @@ async def get_cost_report(
         workspace_display_name = None
 
         if workspace:
-            workspace_id, workspace_display_name, _ = _resolve_workspace(
-                workspace)
+            workspace_id, workspace_display_name, _ = _resolve_workspace(workspace)
             conditions.append("workspace_id = ?")
             params.append(workspace_id)
 
@@ -2459,7 +2631,11 @@ async def get_cost_report(
         if not results:
             return "No cost data available for the specified criteria."
 
-        scope = f"Workspace: {workspace_display_name}" if workspace_display_name else "All Workspaces"
+        scope = (
+            f"Workspace: {workspace_display_name}"
+            if workspace_display_name
+            else "All Workspaces"
+        )
         period_label = period.capitalize() if period != "all" else "All Time"
 
         lines = [
@@ -2488,7 +2664,7 @@ async def get_cost_report(
         utc_now = datetime.now(timezone.utc)
         tier_label = "PEAK" if is_deepseek_peak_hour(utc_now.hour) else "OFF-PEAK"
         flash = get_deepseek_pricing("v4-flash", utc_now.hour)
-        pro   = get_deepseek_pricing("v4-pro",   utc_now.hour)
+        pro = get_deepseek_pricing("v4-pro", utc_now.hour)
         tier_banner = (
             f"[{tier_label} pricing active at {utc_now.strftime('%H:%M UTC')}]\n"
             f"  v4-flash: ${flash['input']:.3f}/M in | "
@@ -2509,6 +2685,7 @@ async def get_cost_report(
 # ---------------------------------------------------------------------------
 # Tool: purge_usage_data
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool()
 async def purge_usage_data(before_date: str) -> str:
@@ -2531,16 +2708,16 @@ async def purge_usage_data(before_date: str) -> str:
 
         # Count records to be deleted
         count_query = "SELECT COUNT(*) as count FROM token_usage WHERE timestamp < ?"
-        count = conn.execute(
-            count_query, (f"{before_date}T00:00:00",)).fetchone()[0]
+        count = conn.execute(count_query, (f"{before_date}T00:00:00",)).fetchone()[0]
 
         if count == 0:
             conn.close()
             return f"No records found before {before_date}."
 
         # Delete records
-        conn.execute("DELETE FROM token_usage WHERE timestamp < ?",
-                     (f"{before_date}T00:00:00",))
+        conn.execute(
+            "DELETE FROM token_usage WHERE timestamp < ?", (f"{before_date}T00:00:00",)
+        )
         conn.commit()
         conn.close()
 
@@ -2566,16 +2743,15 @@ async def debug_workspace_id(test_path: str) -> str:
     """
     try:
         # Show the normalized path used for hashing (matches _derive_workspace_id logic)
-        test_path_stripped = test_path.rstrip('/\\')
+        test_path_stripped = test_path.rstrip("/\\")
 
         # Convert to absolute if needed
         if not os.path.isabs(test_path_stripped):
             test_path_stripped = os.path.abspath(test_path_stripped)
 
         # Normalize using os.path.normcase (respects platform case-sensitivity)
-        normalized_path = os.path.normcase(
-            os.path.normpath(test_path_stripped))
-        normalized_path = normalized_path.replace('\\', '/')
+        normalized_path = os.path.normcase(os.path.normpath(test_path_stripped))
+        normalized_path = normalized_path.replace("\\", "/")
 
         # Get the actual workspace UUID and display name
         workspace_uuid, display_name = _derive_workspace_id(test_path)
@@ -2625,12 +2801,10 @@ async def merge_workspaces(source_workspace_id: str, target_workspace_id: str) -
         target_col = db_client.get_collection(target_workspace_id)
 
         # Get all data from source
-        source_data = source_col.get(
-            include=["metadatas", "documents", "embeddings"])
+        source_data = source_col.get(include=["metadatas", "documents", "embeddings"])
 
         if not source_data["ids"]:
-            log.info("Source workspace '%s' is empty, deleting it",
-                     source_workspace_id)
+            log.info("Source workspace '%s' is empty, deleting it", source_workspace_id)
             db_client.delete_collection(source_workspace_id)
             return f"Source workspace '{source_workspace_id}' was empty and has been deleted."
 
@@ -2640,7 +2814,7 @@ async def merge_workspaces(source_workspace_id: str, target_workspace_id: str) -
             ids=source_data["ids"],
             documents=source_data["documents"],
             metadatas=source_data["metadatas"],
-            embeddings=source_data["embeddings"] if source_data["embeddings"] else None
+            embeddings=source_data["embeddings"] if source_data["embeddings"] else None,
         )
 
         # Delete source workspace
@@ -2649,7 +2823,9 @@ async def merge_workspaces(source_workspace_id: str, target_workspace_id: str) -
         count = len(source_data["ids"])
         log.info(
             "Merged %d items from workspace '%s' into '%s'",
-            count, source_workspace_id, target_workspace_id
+            count,
+            source_workspace_id,
+            target_workspace_id,
         )
         return (
             f"Successfully merged {count} items from '{source_workspace_id}' "
@@ -2664,6 +2840,7 @@ async def merge_workspaces(source_workspace_id: str, target_workspace_id: str) -
 # ---------------------------------------------------------------------------
 # Tool: scan_status
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool()
 async def scan_status(workspace: str) -> str:
@@ -2680,7 +2857,7 @@ async def scan_status(workspace: str) -> str:
         if not progress:
             return (
                 f"No active or recent scan for `{display_name}`.\n"
-                f"To start one, ask your agent: scan_workspace(workspace=\"{display_name}\")"
+                f'To start one, ask your agent: scan_workspace(workspace="{display_name}")'
             )
 
         elapsed = datetime.now(timezone.utc).timestamp() - progress.started_at
@@ -2698,8 +2875,9 @@ async def scan_status(workspace: str) -> str:
         # Estimate remaining time
         if progress.scanned > 0:
             rate = progress.scanned / elapsed if elapsed > 0 else 0
-            remaining = (progress.total_files - progress.scanned) / \
-                rate if rate > 0 else 0
+            remaining = (
+                (progress.total_files - progress.scanned) / rate if rate > 0 else 0
+            )
             eta = f"~{remaining:.0f}s remaining"
         else:
             eta = "estimating..."
@@ -2721,6 +2899,7 @@ async def scan_status(workspace: str) -> str:
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     import sys
+
     # If run with --sse (like in our Docker container), serve over the network
     if "--sse" in sys.argv:
         mcp.run(transport="sse", host="0.0.0.0", port=8200)

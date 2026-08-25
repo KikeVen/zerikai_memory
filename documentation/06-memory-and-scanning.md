@@ -62,6 +62,12 @@ duplicates. Resolve with:
 The agent calls `merge_workspaces`. **Irreversible** — the source workspace is
 deleted after merge.
 
+**Upgrading:** Because the UUID is derived from the absolute path, always upgrade
+**in place** with `git pull` — never copy, rename, clone, or move the project
+directory. A changed path generates a new UUID and orphans the existing collection
+and brief. Back up `.brain/` before upgrading so you can restore your already-indexed
+memory exactly as it was — no re-indexing needed. See [09-upgrading.md](09-upgrading.md).
+
 ---
 
 ## Bare Files

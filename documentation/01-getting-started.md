@@ -105,6 +105,41 @@ You should see the startup banner followed by `OK`.
 
 ---
 
+## Upgrading
+
+Upgrade **in place** — never copy, rename, clone, or move the project directory.
+Your workspace UUID is derived from its absolute filesystem path, so changing the
+path generates a new UUID and orphans your existing collections and briefs. Because
+`.brain/` is gitignored, `git pull` never touches your memory.
+
+The whole point is to **preserve your already-indexed `.brain/` data** — back it up,
+upgrade the code, restore it, and you get your old memory back exactly as it was.
+No re-indexing needed.
+
+```bash
+# 1. Stop the MCP server (close the IDE / kill main.py) — releases the ChromaDB lock
+
+# 2. Back up your existing indexed data so you don't lose it
+#    (do NOT rename the whole project — only back up .brain/)
+#    Windows (PowerShell):  Copy-Item -Recurse .brain .brain.bak
+#    macOS / Linux:         cp -r .brain .brain.bak
+
+# 3. Pull the latest code
+git pull
+
+# 4. Reinstall dependencies only if requirements.txt changed
+#    Windows:  .\venv\Scripts\python.exe -m pip install -r requirements.txt
+#    macOS/Linux:  venv/bin/python -m pip install -r requirements.txt
+
+# 5. Restore .brain/ (only needed if the upgrade replaced it), restart, and verify
+#    the workspace still resolves to the same UUID — your old memory is back
+```
+
+See [09-upgrading.md](09-upgrading.md) for the full guide, including backup/restore
+and recovery via `merge_workspaces` if you already moved the project.
+
+---
+
 ## Per-Project Setup
 
 Run this sequence for every new project, and again after any major refactor.

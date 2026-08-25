@@ -46,6 +46,13 @@ to the UUID via a SQLite workspace registry (`zerikai.db`). Re-scanning is
 idempotent: deterministic MD5 IDs mean re-scanned entities overwrite, never
 duplicate.
 
+> **Upgrade note:** Because the UUID is derived from the absolute path, always
+> upgrade **in place** with `git pull` — never copy, rename, clone, or move the
+> project directory. A changed path generates a new UUID and orphans the existing
+> collection and brief. Back up `.brain/` before upgrading so you can restore your
+> already-indexed memory exactly as it was — no re-indexing needed. See
+> [09-upgrading.md](09-upgrading.md).
+
 ### 4 — Retrieval & Reranking Layer
 
 Hybrid search pipeline:

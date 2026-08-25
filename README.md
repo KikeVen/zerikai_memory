@@ -270,6 +270,49 @@ See below for a full reference of available commands and their descriptions.
 
 ---
 
+## Safe Upgrade Process
+
+Upgrading zerikai_memory while keeping your already indexed workspaces is safe **as long as the workspace path never changes**.
+
+Your workspace identity is a stable UUID derived from its absolute filesystem path
+(`_derive_workspace_id` in `main.py`). Because `.brain/` is gitignored, a `git pull`
+never touches your indexed memory, project briefs, or workspace registry.
+
+**Upgrade in place — never copy, rename, clone, or move the project directory.**
+
+The whole point is to **preserve your already-indexed `.brain/` data** — back it up,
+upgrade the code, restore it, and you get your old memory back exactly as it was.
+No re-indexing needed.
+
+```bash
+# 1. Stop the MCP server (close the IDE / kill main.py) — releases the ChromaDB lock
+
+# 2. Back up your existing indexed data so you don't lose it
+#    (do NOT rename the whole project — only back up .brain/)
+#    Windows (PowerShell):  Copy-Item -Recurse .brain .brain.bak
+#    macOS / Linux:         cp -r .brain .brain.bak
+
+# 3. Pull the latest code
+git pull
+
+# 4. Reinstall dependencies only if requirements.txt changed
+#    Windows:  .\venv\Scripts\python.exe -m pip install -r requirements.txt
+#    macOS/Linux:  venv/bin/python -m pip install -r requirements.txt
+
+# 5. Restore .brain/ (only needed if the upgrade replaced it), restart, and verify
+#    the workspace still resolves to the same UUID — your old memory is back
+```
+
+> ⚠️ **Do NOT** rename the folder (e.g. `zerikai_memory_old`), clone into a
+> differently-named folder, or move the project to a new parent directory. Any of
+> these changes the path → generates a new UUID → orphans your old collection and
+> brief. If you already did this, recover with `merge_workspaces`.
+
+Full step-by-step guide, backup/restore, and recovery instructions:
+**[documentation/09-upgrading.md](documentation/09-upgrading.md)**
+
+---
+
 ## MCP Tools Reference
 
 You never run these commands directly; your active AI agent executes them on your behalf.
