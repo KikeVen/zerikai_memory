@@ -16,21 +16,7 @@ from uuid import uuid4
 
 import tiktoken
 from chromadb import PersistentClient
-
-try:
-    from mcp.server.fastmcp import FastMCP
-except ImportError:
-    import importlib.metadata
-    import sys
-
-    version = importlib.metadata.version("mcp")
-    print(
-        f"ImportError: FastMCP not found in mcp.server.fastmcp. "
-        f"SDK version {version} detected. Expected <2.0.0.",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
+from mcp.server.mcpserver import MCPServer
 from ollama import Client
 from openai import OpenAI
 
@@ -130,7 +116,7 @@ def _atomic_write_text(path: Path, content: str, retries: int = 3) -> None:
 # ---------------------------------------------------------------------------
 # MCP Server
 # ---------------------------------------------------------------------------
-mcp = FastMCP("UniversalBrain")
+mcp = MCPServer("UniversalBrain")
 
 # ---------------------------------------------------------------------------
 # ChromaDB — single client, collections are per-workspace (created on demand)
@@ -2898,11 +2884,5 @@ async def scan_status(workspace: str) -> str:
 
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    import sys
 
-    # If run with --sse (like in our Docker container), serve over the network
-    if "--sse" in sys.argv:
-        mcp.run(transport="sse", host="0.0.0.0", port=8200)
-    else:
-        # Standard local IDE execution
-        mcp.run()
+    mcp.run(transport="stdio")
