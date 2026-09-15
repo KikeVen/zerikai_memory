@@ -63,7 +63,7 @@ checklist, format reference, and invocation patterns.
 | `DEEPSEEK_API_KEY` | *(required)* | API key from [platform.deepseek.com](https://platform.deepseek.com). Required even in `local` mode. |
 | `MEMORY_MODE` | `cloud` | `cloud` / `hybrid` / `local` — see mode table below. |
 | `ENABLE_TOKEN_TRACKING` | `true` | Tracks usage and cost in `.brain/zerikai.db`. |
-| `ENABLE_DEEPSEEK_PRO` | `false` | Enables v4-pro for architectural queries. 6× more expensive — keep `false` unless needed. |
+| `ENABLE_DEEPSEEK_PRO` | `false` | Enables v4-pro for architectural queries. ~4× more expensive — keep `false` unless needed. |
 | `QUERY_DISTANCE_THRESHOLD` | `1.5` | L2 distance cutoff for retrieval. Lower = stricter matches. Watch `server.log` to calibrate. |
 | `ENABLE_LEXICAL_RERANK` | `false` | Hybrid rerank: boosts results with keyword overlap in entity name + docstring. |
 | `LEXICAL_RERANK_WEIGHT` | `0.05` | Per-keyword boost weight. Keep below `0.156` to avoid overriding semantic results. |
@@ -129,7 +129,7 @@ Routing is automatic. Override explicitly with `use_cloud=True` or `use_cloud=Fa
 | Condition | Engine | Cost |
 |---|---|---|
 | Short, specific query (under 40 words) | Ollama | Free |
-| Query ≥ 40 words | DeepSeek v4-flash | ~$0.007–$0.014/M cached tokens (off-peak / peak) |
+| Query ≥ 40 words | DeepSeek deepseek-flash | ~$0.003–$0.006/M cached tokens (off-peak / peak) |
 | Contains `refactor`, `architect`, `design`, `audit` | DeepSeek v4-pro | ~$0.022–$0.044/M cached tokens (off-peak / peak) |
 | `use_cloud=True` override | DeepSeek | Varies |
 | `use_cloud=False` override | Ollama | Free |
@@ -138,25 +138,26 @@ Routing is automatic. Override explicitly with `use_cloud=True` or `use_cloud=Fa
 
 ## DeepSeek KV Cache & Pricing Tiers
 
-DeepSeek now uses **peak / off-peak pricing**. Peak hours (UTC): **01:00–04:00** and
-**06:00–10:00**. Off-peak rates are exactly half of peak rates.
+DeepSeek uses **peak / off-peak pricing**. Peak hours (UTC): **01:00–04:00** and
+**06:00–10:00, Monday–Friday only**. Weekends are always off-peak. Off-peak rates
+are exactly half of peak rates.
 
-| Tier | v4-flash input | v4-flash output | v4-flash cached | v4-pro input | v4-pro output | v4-pro cached |
+| Tier | deepseek-flash input | deepseek-flash output | deepseek-flash cached | v4-pro input | v4-pro output | v4-pro cached |
 |---|---|---|---|---|---|---|
-| **Peak** | $0.44/M | $1.32/M | $0.014/M | $1.32/M | $3.96/M | $0.044/M |
-| **Off-peak** | $0.22/M | $0.66/M | $0.007/M | $0.66/M | $1.98/M | $0.022/M |
+| **Peak** | $0.30/M | $1.20/M | $0.006/M | $1.32/M | $3.96/M | $0.044/M |
+| **Off-peak** | $0.15/M | $0.60/M | $0.003/M | $0.66/M | $1.98/M | $0.022/M |
 
 Use `get_deepseek_pricing(model_key)` (from `config.py`) — **never reference
 `DEEPSEEK_PRICING` directly.** The function resolves the correct tier at call time.
 
 The project brief is a fixed prefix on every DeepSeek API call. After the first query
-it caches at the active cached rate — roughly 30–60× cheaper than a cache miss.
+it caches at the active cached rate — roughly 50–100× cheaper than a cache miss.
 
 To protect this prefix:
 
 - Keep `force_refresh_brief=False` during daily development.
 - Do not switch between `ENABLE_DEEPSEEK_PRO=true` and `false` unnecessarily —
-  v4-pro and v4-flash maintain separate caches.
+  v4-pro and deepseek-flash maintain separate caches.
 - The first query of a new session is always a miss. Cache warms on subsequent calls.
 - If `get_cache_stats` shows a high miss rate, check whether the brief was recently
   force-refreshed.

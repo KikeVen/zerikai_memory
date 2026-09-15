@@ -335,4 +335,8 @@ The query test was clean and controlled. The model difference is real and attrib
 
 ---
 
-> 📖 **Original Publication**: This engineering post-mortem was originally published on the Zerikai Tech Blog. Read the clean, formatted web version at [https://zerikai.com](https://zerikai.com/blog/Post-Mortem_Building_Local_MCP_Server_Codebase_Memory_using_Ollama_and_ChromaDB.html).
+<p>
+  📖 <strong>Original Publication</strong>: This engineering post-mortem was originally published on the Zerikai Tech Blog.
+  Read the clean, formatted web version on my portfolio site at
+  <a href="https://enriquebruzual.github.io/blog/Post-Mortem_Building_Local_MCP_Server_Codebase_Memory_using_Ollama_and_ChromaDB.html" rel="canonical">enriquebruzual.github.io</a>.
+</p>

@@ -25,11 +25,12 @@ If issues persist, unset it or set it explicitly to `http://127.0.0.1:11434`.
 
 Two tiers:
 
-- **v4-flash** — handles 99% of queries. Fast, cheap, high quality for synthesis.
-  Keep `ENABLE_DEEPSEEK_PRO=false`.
+- **deepseek-flash** — handles 99% of queries. Fast, cheap, high quality for
+  synthesis. Served by DeepSeek-V4.1-Flash. Keep `ENABLE_DEEPSEEK_PRO=false`.
 - **v4-pro** — reserved for major architectural queries when explicitly enabled.
-  Maintains a separate KV cache from v4-flash — switching between them resets the
-  cache and raises costs until it re-warms.
+  Served by DeepSeek-V4-Pro-0813. Maintains a separate KV cache from
+  deepseek-flash — switching between them resets the cache and raises costs until
+  it re-warms.
 
 API key from [platform.deepseek.com](https://platform.deepseek.com). Required in
 `.env` even in `local` mode.
@@ -44,7 +45,7 @@ Routing runs automatically on every `query_memory` call. Override with
 | Condition | Engine | Cost |
 |---|---|---|
 | Query under 40 words | Ollama | Free |
-| Query ≥ 40 words | DeepSeek v4-flash | ~$0.007–$0.014/M cached tokens (off-peak / peak) |
+| Query ≥ 40 words | DeepSeek deepseek-flash | ~$0.003–$0.006/M cached tokens (off-peak / peak) |
 | Contains `refactor`, `architect`, `design`, `audit` | DeepSeek v4-pro | ~$0.022–$0.044/M cached tokens (off-peak / peak) |
 | `use_cloud=True` override | DeepSeek | Varies |
 | `use_cloud=False` override | Ollama | Free |
@@ -70,17 +71,18 @@ and brief quality is highest.
 
 ## DeepSeek KV Cache & Pricing Tiers
 
-DeepSeek now uses **peak / off-peak pricing**. Peak hours (UTC): **01:00–04:00** and
-**06:00–10:00**. Off-peak rates are exactly half of peak.
+DeepSeek uses **peak / off-peak pricing**. Peak hours (UTC): **01:00–04:00** and
+**06:00–10:00, Monday–Friday only**. Weekends are always off-peak. Off-peak rates
+are exactly half of peak.
 
-| Tier | v4-flash cached | v4-flash miss | v4-pro cached | v4-pro miss |
+| Tier | deepseek-flash cached | deepseek-flash miss | v4-pro cached | v4-pro miss |
 |---|---|---|---|---|
-| **Peak** | $0.014/M | $0.44/M | $0.044/M | $1.32/M |
-| **Off-peak** | $0.007/M | $0.22/M | $0.022/M | $0.66/M |
+| **Peak** | $0.006/M | $0.30/M | $0.044/M | $1.32/M |
+| **Off-peak** | $0.003/M | $0.15/M | $0.022/M | $0.66/M |
 
 The project brief is a fixed prefix on every DeepSeek API call. After the first
 query of a session, DeepSeek caches this prefix at the active cached rate —
-roughly 30–60× cheaper than a miss.
+roughly 50–100× cheaper than a miss.
 
 The first query of every new session is always a miss. The cache warms on
 subsequent calls within the same session.
@@ -88,8 +90,8 @@ subsequent calls within the same session.
 **What resets the cache:**
 
 - Force-refreshing the project brief (`force_refresh_brief=True`)
-- Switching between `ENABLE_DEEPSEEK_PRO=true` and `false` — v4-flash and v4-pro
-  maintain separate caches
+- Switching between `ENABLE_DEEPSEEK_PRO=true` and `false` — deepseek-flash and
+  v4-pro maintain separate caches
 - Significant changes to the brief content itself
 
 **Monitor cache health:**
@@ -104,16 +106,17 @@ usually means sessions are short or the brief is being regenerated too frequentl
 ---
 
 ## Running Cost Reference
-
-> Prices shown as off-peak / peak. Peak hours (UTC): 01:00–04:00 and 06:00–10:00.
+,
+> Monday–Friday only.
 
 | Operation | Engine | Estimated Cost |
 |---|---|---|
 | File scan (tree-sitter parseable) | Local only | $0.00 |
-| File scan (bare/non-parseable) | DeepSeek v4-flash | ~$0.000083–$0.000167 / file |
-| Brief synthesis (9 sections) | DeepSeek v4-flash | ~$0.0015–$0.003 / full run |
-| Routine query (cache hit) | DeepSeek v4-flash | $0.007–$0.014/M tokens |
+| File scan (bare/non-parseable) | DeepSeek deepseek-flash | ~$0.000057–$0.000114 / file |
+| Brief synthesis (9 sections) | DeepSeek deepseek-flash | ~$0.0010–$0.0021 / full run |
+| Routine query (cache hit) | DeepSeek deepseek-flash | $0.003–$0.006/M tokens |
 | Architectural query (cache hit) | DeepSeek v4-pro | $0.022–$0.044/M tokens |
+| Repeated queries (cache hit vs miss) | DeepSeek KV cache | 50–1044/M tokens |
 | Repeated queries (cache hit vs miss) | DeepSeek KV cache | 30–60× cheaper vs. miss |
 
 The real cost is not DeepSeek. It is what your IDE's AI charges every time you

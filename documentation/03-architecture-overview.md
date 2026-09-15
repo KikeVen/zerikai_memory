@@ -69,7 +69,7 @@ Hybrid search pipeline:
 Auto-routes between Ollama (local, free) and DeepSeek (cloud, paid):
 
 - Queries under 40 words → Ollama via `_query_ollama()`
-- Queries 40+ words → DeepSeek v4-flash
+- Queries 40+ words → DeepSeek deepseek-flash
 - Queries containing `refactor`, `architect`, `design`, `audit` keywords → DeepSeek
   v4-pro (only if `ENABLE_DEEPSEEK_PRO=true`)
 - Override anytime with `use_cloud=True` or `use_cloud=False`
@@ -114,7 +114,7 @@ and retrieval accuracy.
 | 9 | Future Roadmap | Planned features and TODOs from code |
 
 The brief is the stable prefix that DeepSeek caches across all queries. After the
-first query it caches at **$0.007–$0.014/M tokens** (hit) vs. **$0.22–$0.44/M**
+first query it caches at **$0.003–$0.006/M tokens** (hit) vs. **$0.15–$0.30/M**
 (input miss, off-peak/peak).
 Force-refreshing resets that cache — treat it like a schema migration.
 

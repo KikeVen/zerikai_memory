@@ -102,7 +102,7 @@ content via DeepSeek (cloud) or Ollama (local/hybrid). Generation time: ~20–30
 seconds with cloud mode.
 
 **Do not force-refresh the brief during normal development.** Force-refreshing resets
-the DeepSeek KV cache. Every query pays full miss-rate pricing (~$0.22–$0.44/M tokens)
+the DeepSeek KV cache. Every query pays full miss-rate pricing (~$0.15–$0.30/M tokens)
 until the cache warms again on subsequent calls. Only force a refresh after a major
 architectural change:
 

@@ -226,7 +226,7 @@ def _track_token_usage(
     Args:
         workspace_id: The workspace identifier
         operation: Type of operation (query, brief_synthesis, etc.)
-        model: Model name (deepseek-v4-flash, deepseek-v4-pro)
+        model: Model name (deepseek-flash, deepseek-v4-pro)
         usage: OpenAI usage object from API response
     """
     if not ENABLE_TOKEN_TRACKING or not usage:
@@ -237,7 +237,9 @@ def _track_token_usage(
         prompt_tokens = getattr(usage, "prompt_tokens", 0)
         completion_tokens = getattr(usage, "completion_tokens", 0)
         cache_hit = getattr(usage, "prompt_cache_hit_tokens", 0)
-        cache_miss = getattr(usage, "prompt_cache_miss_tokens", 0)
+        # Derive cache_miss from total (OpenAI SDK strips prompt_cache_miss_tokens field)
+        # Guarantee: cache_hit + cache_miss = prompt_tokens, matching DeepSeek API contract
+        cache_miss = prompt_tokens - cache_hit
 
         # Determine pricing tier (time-aware — resolves peak vs off-peak at call time)
         model_key = "v4-pro" if "pro" in model.lower() else "v4-flash"
@@ -248,6 +250,19 @@ def _track_token_usage(
             (cache_hit / 1_000_000) * pricing["cache_hit"]
             + (cache_miss / 1_000_000) * pricing["input"]
             + (completion_tokens / 1_000_000) * pricing["output"]
+        )
+
+        # Debug: log exact token breakdown and rates for later verification
+        log.info(
+            "COST_CALC_DEBUG | prompt_tokens=%d | cache_hit=%d | cache_miss=%d | completion=%d | rates[input]=$%.4f | rates[output]=$%.4f | rates[cache_hit]=$%.6f | calculated_cost=$%.6f",
+            prompt_tokens,
+            cache_hit,
+            cache_miss,
+            completion_tokens,
+            pricing["input"],
+            pricing["output"],
+            pricing["cache_hit"],
+            cost,
         )
 
         # Store in database
@@ -1138,7 +1153,6 @@ def _select_model(user_query: str) -> str:
         return DEEPSEEK_MODEL_PRO
     return DEEPSEEK_MODEL_FAST
 
-
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -1689,8 +1703,10 @@ async def _query_deepseek(context: str, user_query: str, workspace_id: str) -> s
     # Log cache performance — watch this to verify prefix stability is working
     usage = getattr(response, "usage", None)
     if usage:
+        prompt_tokens = getattr(usage, "prompt_tokens", 0)
         hit = getattr(usage, "prompt_cache_hit_tokens", 0)
-        miss = getattr(usage, "prompt_cache_miss_tokens", 0)
+        # Derive miss from total (OpenAI SDK strips prompt_cache_miss_tokens field)
+        miss = prompt_tokens - hit
         total = hit + miss
         hit_pct = round(hit / total * 100) if total else 0
         log.info(

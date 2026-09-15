@@ -37,16 +37,17 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 # https://api.deepseek.com. Used by ds_client for all cloud calls.
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 
-# Use v4-flash for general synthesis (fast, cheap, good cache hit rate).
-# NOTE: deepseek-chat is a legacy alias retiring July 24 2026.
-DEEPSEEK_MODEL_FAST = "deepseek-v4-flash"
+# Use deepseek-flash for general synthesis (fast, cheap, good cache hit rate).
+# Served by DeepSeek-V4.1-Flash. NOTE: "deepseek-v4-flash" is a retired legacy
+# alias still accepted but billed at Flash price — prefer the canonical name.
+DEEPSEEK_MODEL_FAST = "deepseek-flash"
 # Use deepseek-v4-pro for maximum reasoning on complex architectural
-# queries (architecture, design, tradeoffs). 75% off until May 31 2026.
-# NOTE: deepseek-reasoner is a legacy alias retiring July 24 2026.
+# queries (architecture, design, tradeoffs). Served by DeepSeek-V4-Pro-0813.
+# NOTE: "deepseek-reasoner" is a legacy alias retiring July 24 2026.
 DEEPSEEK_MODEL_PRO = "deepseek-v4-pro"
 
 # Enable deepseek-v4-pro for complex queries (architecture, design, tradeoffs)
-# If False, always uses v4-flash (cheaper, 3x cost savings now, 6x after May 31 2026)
+# If False, always uses deepseek-flash (cheaper — pro is ~4x the Flash rate)
 ENABLE_DEEPSEEK_PRO = os.getenv(
     "ENABLE_DEEPSEEK_PRO", "false").lower() == "true"
 
@@ -77,10 +78,10 @@ ZERIKAI_DB = DB_PATH / "zerikai.db"
 
 # ─── DeepSeek Pricing (USD per 1M tokens) ────────────────────────────────────
 # Source: https://api-docs.deepseek.com/quick_start/pricing
-# Updated: 2026-08-17
+# Updated: 2026-09-14
 #
-# Peak hours (UTC): 01:00–04:00 and 06:00–10:00
-# Off-peak = all other hours. Off-peak rates are exactly half of peak.
+# Peak hours (UTC): 01:00–04:00 and 06:00–10:00, Monday–Friday only.
+# Weekends are always off-peak. Off-peak rates are exactly half of peak.
 #
 # ⚠️  Pricing is now TIME-DEPENDENT. Use get_deepseek_pricing() at call time
 #     instead of referencing DEEPSEEK_PRICING directly.
@@ -95,20 +96,20 @@ DEEPSEEK_PEAK_WINDOWS_UTC = [
 # peak. Source: https://api-docs.deepseek.com/quick_start/pricing.
 # TIME-DEPENDENT: read via get_deepseek_pricing() at call time, not directly.
 DEEPSEEK_PRICING = {
-    # deepseek-v4-flash (primary model for general synthesis)
+    # deepseek-flash / DeepSeek-V4.1-Flash (primary model for general synthesis)
     "v4-flash": {
         "peak": {
-            "input":     0.44,
-            "output":    1.32,
-            "cache_hit": 0.014,
+            "input":     0.30,
+            "output":    1.20,
+            "cache_hit": 0.006,
         },
         "off_peak": {
-            "input":     0.22,
-            "output":    0.66,
-            "cache_hit": 0.007,
+            "input":     0.15,
+            "output":    0.60,
+            "cache_hit": 0.003,
         },
     },
-    # deepseek-v4-pro (complex architectural queries)
+    # deepseek-v4-pro / DeepSeek-V4-Pro-0813 (complex architectural queries)
     "v4-pro": {
         "peak": {
             "input":     1.32,
@@ -124,28 +125,45 @@ DEEPSEEK_PRICING = {
 }
 
 
-def is_deepseek_peak_hour(utc_hour: int | None = None) -> bool:
-    """Return True if the given UTC hour falls within a DeepSeek peak window.
-    Defaults to current UTC hour if not provided. Use this to select the
-    correct pricing tier at the moment of the API call. Peak windows:
-    01:00–04:00 and 06:00–10:00 UTC. Pure, deterministic, no side effects.
+def is_deepseek_peak_hour(
+    utc_hour: int | None = None,
+    utc_weekday: int | None = None,
+) -> bool:
+    """Return True if the given UTC time falls within a DeepSeek peak window.
+    Defaults to current UTC time if not provided. Peak windows are
+    01:00–04:00 and 06:00–10:00 UTC, Monday–Friday only — weekends are always
+    off-peak. Use this to select the correct pricing tier at the moment of the
+    API call. Pure, deterministic, no side effects.
+    Args:
+        utc_hour:    Override UTC hour (0–23). Defaults to now().
+        utc_weekday: Override UTC weekday (0=Mon … 6=Sun). Defaults to now().
     """
+    now = datetime.datetime.now(datetime.timezone.utc)
     if utc_hour is None:
-        utc_hour = datetime.datetime.now(datetime.timezone.utc).hour
+        utc_hour = now.hour
+    if utc_weekday is None:
+        utc_weekday = now.weekday()
+    if utc_weekday >= 5:  # Saturday or Sunday — always off-peak
+        return False
     return any(start <= utc_hour < end for start, end in DEEPSEEK_PEAK_WINDOWS_UTC)
 
 
-def get_deepseek_pricing(model_key: str, utc_hour: int | None = None) -> dict:
+def get_deepseek_pricing(
+    model_key: str,
+    utc_hour: int | None = None,
+    utc_weekday: int | None = None,
+) -> dict:
     """Return the active pricing tier for a model based on current UTC time.
     Falls back to v4-flash pricing if model_key is not recognised.
     Args:
-        model_key:  'v4-flash' or 'v4-pro'
-        utc_hour:   Override UTC hour (0–23). Defaults to now(). Useful for
-                    testing or when the caller already has the request timestamp.
+        model_key:   'v4-flash' or 'v4-pro'
+        utc_hour:    Override UTC hour (0–23). Defaults to now(). Useful for
+                     testing or when the caller already has the request timestamp.
+        utc_weekday: Override UTC weekday (0=Mon … 6=Sun). Defaults to now().
     Returns:
         dict with keys: input, output, cache_hit  (USD per 1M tokens)
     """
-    tier = "peak" if is_deepseek_peak_hour(utc_hour) else "off_peak"
+    tier = "peak" if is_deepseek_peak_hour(utc_hour, utc_weekday) else "off_peak"
     return DEEPSEEK_PRICING.get(model_key, DEEPSEEK_PRICING["v4-flash"])[tier]
 
 

@@ -46,7 +46,7 @@ checklist and format reference.
 > contributions are not being accepted at this time. AI-generated PRs will be
 > closed and users may be blocked.
 
-Visit [zerikai.com](http://zerikai.com) for more.
+Visit [Enrique Bruzual](https://enriquebruzual.github.io/) for more.
 
 ---
 
