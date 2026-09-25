@@ -97,9 +97,10 @@ Auto-routes between Ollama (local, free) and DeepSeek (cloud, paid):
 ## Project Brief
 
 The brief is the foundation of every query. It is synthesized from the indexed codebase
-across 9 sections in parallel via `asyncio.gather`, using up to 75 ChromaDB nodes per
-section. Target size: **1,000–1,200 tokens** — the sweet spot between cache stability
-and retrieval accuracy.
+across 9 sections in parallel via `asyncio.gather`. Each section draws up to
+`BRIEF_FETCH_CAP` (default 20) ChromaDB nodes, lexically re-ranks them, then trims
+to its per-section cap of 20–30. Target size: **1,000–1,200 tokens** — the sweet
+spot between cache stability and retrieval accuracy.
 
 | # | Section | Content |
 |---|---|---|
@@ -117,6 +118,10 @@ The brief is the stable prefix that DeepSeek caches across all queries. After th
 first query it caches at **$0.003–$0.006/M tokens** (hit) vs. **$0.15–$0.30/M**
 (input miss, off-peak/peak).
 Force-refreshing resets that cache — treat it like a schema migration.
+
+Brief synthesis runs **thinking-disabled** by default: these sections are
+extractive, so chain-of-thought would spend the output budget on reasoning
+instead of section text. See `DEEPSEEK_THINKING_BRIEF` in `.env`.
 
 ---
 

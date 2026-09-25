@@ -6,13 +6,20 @@ venv/
 __ignore/
 .brain/vector_db/
 docs/
+tests/
 scripts/
 blog/
-
+img/
+.github/
+.vscode/
 agent_rules/
 documentation/
 embedding-docstring/
 auxiliary_scripts/
+
+jev/docs/
+jev/test_cases/
+jev/test_results/
 
 .gitignore
 .flake8
@@ -43,3 +50,4 @@ build/
 *.h
 
 LICENSE
+PLAN_deepseek_thinking_config.md

@@ -35,6 +35,34 @@ Two tiers:
 API key from [platform.deepseek.com](https://platform.deepseek.com). Required in
 `.env` even in `local` mode.
 
+#### Thinking Mode
+
+DeepSeek's thinking mode (chain-of-thought) is **ON by default at effort `high`**
+when no parameter is sent. In thinking mode the model emits reasoning tokens that
+are billed as **output** tokens, and `temperature` / penalty parameters are
+silently ignored. Docs:
+<https://api-docs.deepseek.com/guides/thinking_mode/>.
+
+Zerikai controls this per call path so extractive work does not burn its token
+budget on reasoning:
+
+| Setting | Applies to | Default |
+|---|---|---|
+| `DEEPSEEK_THINKING_BRIEF` | 9-section project brief generation | `disabled` |
+| `DEEPSEEK_THINKING_SCAN` | per-file indexing summaries | `disabled` |
+| `DEEPSEEK_THINKING_QUERY` | `query_memory` answer synthesis | `disabled` |
+| `DEEPSEEK_REASONING_EFFORT_BRIEF` | brief path when `enabled`: `low` / `high` / `max` | `low` |
+| `DEEPSEEK_REASONING_EFFORT_SCAN` | scan path when `enabled`: `low` / `high` / `max` | `low` |
+| `DEEPSEEK_REASONING_EFFORT_QUERY` | query path when `enabled`: `low` / `high` / `max` | `low` |
+
+Each path has its own toggle **and** its own effort, so enabling one path never
+constrains another.
+
+The toggle is sent in OpenAI format: `thinking: {"type": "disabled"}` inside
+`extra_body` when off, or `reasoning_effort` when on. It is **DeepSeek-only** —
+the Ollama path never receives it. Briefs and query synthesis are separate
+pipelines, so their toggles are deliberately independent.
+
 ---
 
 ## Auto-Routing Logic

@@ -5,10 +5,13 @@
 
 # Directories
 .brain/
+.github/skills/
 __ignore/
 __pycache__
 venv/
 scripts/
 docs/
+.vscode/
 auxiliary_scripts/
+tests/
 blog/Post-Mortem_Building_Local_MCP_Server_Codebase_Memory_using_Ollama_and_ChromaDB.pdf

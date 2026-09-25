@@ -64,10 +64,18 @@ checklist, format reference, and invocation patterns.
 | `MEMORY_MODE` | `cloud` | `cloud` / `hybrid` / `local` — see mode table below. |
 | `ENABLE_TOKEN_TRACKING` | `true` | Tracks usage and cost in `.brain/zerikai.db`. |
 | `ENABLE_DEEPSEEK_PRO` | `false` | Enables v4-pro for architectural queries. ~4× more expensive — keep `false` unless needed. |
+| `DEEPSEEK_THINKING_BRIEF` | `disabled` | `enabled` / `disabled` — chain-of-thought for 9-section brief generation. DeepSeek-only; inert on the Ollama path. |
+| `DEEPSEEK_THINKING_SCAN` | `disabled` | `enabled` / `disabled` — chain-of-thought for per-file indexing summaries. |
+| `DEEPSEEK_THINKING_QUERY` | `disabled` | `enabled` / `disabled` — chain-of-thought for `query_memory` answer synthesis. **Independent** of the brief toggle. |
+| `DEEPSEEK_REASONING_EFFORT_BRIEF` | `low` | `low` / `high` / `max` — used only when `DEEPSEEK_THINKING_BRIEF` is `enabled`. |
+| `DEEPSEEK_REASONING_EFFORT_SCAN` | `low` | `low` / `high` / `max` — used only when `DEEPSEEK_THINKING_SCAN` is `enabled`. |
+| `DEEPSEEK_REASONING_EFFORT_QUERY` | `low` | `low` / `high` / `max` — used only when `DEEPSEEK_THINKING_QUERY` is `enabled`. |
 | `QUERY_DISTANCE_THRESHOLD` | `1.5` | L2 distance cutoff for retrieval. Lower = stricter matches. Watch `server.log` to calibrate. |
 | `ENABLE_LEXICAL_RERANK` | `false` | Hybrid rerank: boosts results with keyword overlap in entity name + docstring. |
 | `LEXICAL_RERANK_WEIGHT` | `0.05` | Per-keyword boost weight. Keep below `0.156` to avoid overriding semantic results. |
 | `SKIP_BARE_FILES` | `[]` | Extensions to skip when tree-sitter finds zero entities. E.g. `['.py', '.html', '.md', '.css']`. |
+| `FETCH_CAP` | `75` | Query-retrieval pool size before lexical reranking in `query_memory`. Query-only. |
+| `BRIEF_FETCH_CAP` | `20` | ChromaDB candidate pool per brief section before the per-section trim (20/25/30). |
 
 > **Upgrading from an older version?** Replace `SKIP_BARE_PY_FILES=true` with
 > `SKIP_BARE_FILES=['.py', '.html', '.md', '.css']`. The boolean toggle is no longer read.
@@ -133,6 +141,14 @@ Routing is automatic. Override explicitly with `use_cloud=True` or `use_cloud=Fa
 | Contains `refactor`, `architect`, `design`, `audit` | DeepSeek v4-pro | ~$0.022–$0.044/M cached tokens (off-peak / peak) |
 | `use_cloud=True` override | DeepSeek | Varies |
 | `use_cloud=False` override | Ollama | Free |
+
+Query-synthesis thinking is controlled separately by `DEEPSEEK_THINKING_QUERY`
+(default `disabled`) plus `DEEPSEEK_REASONING_EFFORT_QUERY`; it is not affected by
+the routing decision. See [`.env` Variables](#env-variables) and
+[LLM Backends → Thinking Mode](05-llm-backends.md#thinking-mode).
+
+> In `local` mode every call goes to Ollama, so all `DEEPSEEK_THINKING_*` vars are
+> inert. In `hybrid` mode briefs use DeepSeek but scans use Ollama.
 
 ---
 

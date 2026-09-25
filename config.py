@@ -51,6 +51,62 @@ DEEPSEEK_MODEL_PRO = "deepseek-v4-pro"
 ENABLE_DEEPSEEK_PRO = os.getenv(
     "ENABLE_DEEPSEEK_PRO", "false").lower() == "true"
 
+# ─── DeepSeek Thinking Mode ──────────────────────────────────────────────────
+# Docs: https://api-docs.deepseek.com/guides/thinking_mode/
+# When no thinking parameter is sent, DeepSeek defaults to thinking ENABLED at
+# effort "high". "disabled" skips chain-of-thought (right for extractive work:
+# briefs and scan summaries); "enabled" keeps it and honours the matching
+# DEEPSEEK_REASONING_EFFORT_* value. Each call path has its own toggle AND its
+# own effort on purpose — briefs and query synthesis are separate pipelines.
+_VALID_THINKING = {"enabled", "disabled"}
+_VALID_EFFORT = {"low", "high", "max"}
+
+
+def _read_thinking(env_name: str, default: str = "disabled") -> str:
+    """Read and validate a thinking-mode env var.
+
+    Returns 'enabled' or 'disabled'; falls back to `default` on unknown values.
+    Pure — reads os.environ only.
+    """
+    value = os.getenv(env_name, default).strip().lower()
+    return value if value in _VALID_THINKING else default
+
+
+def _read_effort(env_name: str, default: str = "low") -> str:
+    """Read and validate a reasoning-effort env var.
+
+    Returns 'low', 'high', or 'max'; falls back to `default` on unknown values.
+    Pure — reads os.environ only.
+    """
+    value = os.getenv(env_name, default).strip().lower()
+    return value if value in _VALID_EFFORT else default
+
+
+# Per-path DeepSeek thinking toggles (enabled | disabled) and matching reasoning
+# effort (low | high | max). Each call path is independently tunable so that
+# enabling one does not silently constrain the others.
+DEEPSEEK_THINKING_BRIEF = _read_thinking("DEEPSEEK_THINKING_BRIEF", "disabled")
+DEEPSEEK_THINKING_SCAN = _read_thinking("DEEPSEEK_THINKING_SCAN", "disabled")
+DEEPSEEK_THINKING_QUERY = _read_thinking("DEEPSEEK_THINKING_QUERY", "disabled")
+DEEPSEEK_REASONING_EFFORT_BRIEF = _read_effort("DEEPSEEK_REASONING_EFFORT_BRIEF", "low")
+DEEPSEEK_REASONING_EFFORT_SCAN = _read_effort("DEEPSEEK_REASONING_EFFORT_SCAN", "low")
+DEEPSEEK_REASONING_EFFORT_QUERY = _read_effort("DEEPSEEK_REASONING_EFFORT_QUERY", "low")
+
+
+def deepseek_thinking_kwargs(mode: str, effort: str = "low") -> dict:
+    """Return OpenAI-format thinking kwargs for a DeepSeek chat call.
+
+    mode: one of DEEPSEEK_THINKING_BRIEF / _SCAN / _QUERY (an 'enabled'/'disabled'
+    string). effort: the matching DEEPSEEK_REASONING_EFFORT_* value.
+    disabled → {"extra_body": {"thinking": {"type": "disabled"}}};
+    enabled → {"reasoning_effort": <effort>}.
+    Spread into ds_client.chat.completions.create(**kwargs). Pure, deterministic.
+    """
+    if mode == "disabled":
+        return {"extra_body": {"thinking": {"type": "disabled"}}}
+    return {"reasoning_effort": effort}
+
+
 # Local Ollama model for summarisation (always free, always local)
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "mistral:7b")
 _host = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
@@ -68,8 +124,12 @@ OLLAMA_HOST = _host
 # vector_db/ and contexts/ are sub-directories created on demand.
 DB_PATH = Path(__file__).parent / ".brain"
 
-# Database configuration
-# zerikai.db stores token tracking, workspace registry, and other persistent state
+# Master switch for token and cost tracking. When true, query_memory and scan
+# operations record per-call token usage and cost rows in zerikai.db; when false
+# every tracking helper returns immediately and no rows are written.
+# Valid values: true/false (case-insensitive). Reads ENABLE_TOKEN_TRACKING from
+# the environment, defaulting to true. Consumed by main.py._init_db and the
+# token-tracking helpers.
 ENABLE_TOKEN_TRACKING = os.getenv(
     "ENABLE_TOKEN_TRACKING", "true").lower() == "true"
 # Path to the persistent sqlite3 database for token tracking, workspace
@@ -86,6 +146,10 @@ ZERIKAI_DB = DB_PATH / "zerikai.db"
 # ⚠️  Pricing is now TIME-DEPENDENT. Use get_deepseek_pricing() at call time
 #     instead of referencing DEEPSEEK_PRICING directly.
 
+# DeepSeek peak-pricing windows in UTC as half-open [start, end) hour tuples,
+# Monday–Friday only — weekends are always off-peak. Each entry is
+# (start_hour, end_hour) with hours in 0–23. Consumed by is_deepseek_peak_hour()
+# to select the peak or off-peak tier in DEEPSEEK_PRICING.
 DEEPSEEK_PEAK_WINDOWS_UTC = [
     (1, 4),   # 01:00–04:00 UTC
     (6, 10),  # 06:00–10:00 UTC
@@ -167,8 +231,10 @@ def get_deepseek_pricing(
     return DEEPSEEK_PRICING.get(model_key, DEEPSEEK_PRICING["v4-flash"])[tier]
 
 
-# Auto-routing thresholds
-# Queries over this word count are escalated to cloud
+# Auto-routing threshold: queries with at least this many whitespace-separated
+# words are escalated to DeepSeek cloud synthesis even in local/hybrid mode.
+# Valid range: non-negative integer; default 40. Consumed by the query_memory
+# router, checked only after CLOUD_ESCALATION_KEYWORDS misses.
 CLOUD_ESCALATION_WORD_COUNT = 40
 
 # Keywords that always trigger cloud synthesis regardless of length
@@ -203,12 +269,83 @@ ENABLE_LEXICAL_RERANK = os.getenv(
 # without overriding semantic distance. Reads from env.
 LEXICAL_RERANK_WEIGHT = float(os.getenv("LEXICAL_RERANK_WEIGHT", "0.05"))
 
-# Maximum number of documents to fetch from ChromaDB before applying lexical reranking.
-# A wider pool allows reranking to pull in keyword-relevant files that might be semantically distant.
-# Does NOT control the final answer size — see the fixed top-5 (`relevant = relevant[:5]`) cutoff applied after reranking in main.py.
+# Query retrieval pool: documents fetched from ChromaDB before lexical
+# reranking in query_memory. A wider pool lets reranking pull in keyword-
+# relevant files that might be semantically distant. Does NOT control the final
+# answer size — query_memory trims to a fixed top-5 after reranking. Query-only;
+# project-brief synthesis uses BRIEF_FETCH_CAP below.
 FETCH_CAP = int(os.getenv("FETCH_CAP", "75"))
+
+# Candidate pool per section during project-brief synthesis. Each of the 9
+# sections queries ChromaDB, lexically re-ranks locally, then trims to its
+# per-section fetch_cap (20/25/30, defined in main.py). Decoupled from FETCH_CAP
+# so a tight query pool does not starve the brief. Default 20.
+# NOTE: a pool below a section's cap limits it — the 25/30-cap sections
+# (Architecture, Dev & Testing, Roadmap) will only receive 20.
+BRIEF_FETCH_CAP = int(os.getenv("BRIEF_FETCH_CAP", "20"))
 
 # Local Ollama concurrency limit.
 # Gates parallel brief synthesis sections to prevent local VRAM thrashing.
 # Default 1 is recommended for 8GB cards; raise if you have more headroom.
 OLLAMA_MAX_CONCURRENCY = int(os.getenv("OLLAMA_MAX_CONCURRENCY", "1"))
+
+# Jev / TypeSafe feature gate and thresholds.
+# Default OFF to preserve byte-identical behavior until explicitly enabled.
+ENABLE_JEV = os.getenv("ENABLE_JEV", "false").lower() == "true"
+# Enables Judge #1, the pre-retrieval query gate in Jev/TypeSafe. When true,
+# assess_query runs before ChromaDB retrieval and may short-circuit with "I don't
+# know"; when false Judge #1 is skipped and only Judge #2 (evidence) decides.
+# Valid values: true/false (case-insensitive); default true. Ignored when
+# ENABLE_JEV is false.
+JEV_ENABLE_QUERY_JUDGE = os.getenv("JEV_ENABLE_QUERY_JUDGE", "true").lower() == "true"
+# TypeSafe/Jev API key. Empty by default; must be set in .env for the Jev client
+# to initialize. When empty, jev.client.get_client raises JevUnavailable and the
+# pipeline fails open to the non-Jev path.
+TYPESAFE_API_KEY = os.getenv("TYPESAFE_API_KEY", "")
+# TypeSafe/Jev model identifier passed to TypeSafeClient as the `model` argument.
+# Default "jev-latest"; override to pin a specific Jev model version.
+TYPESAFE_MODEL = os.getenv("TYPESAFE_MODEL", "jev-latest")
+# Timeout in seconds for Jev/TypeSafe system_one network calls. Valid range:
+# positive float; default 8 (reads JEV_TIMEOUT_SECONDS from the environment).
+JEV_TIMEOUT_SECONDS = float(os.getenv("JEV_TIMEOUT_SECONDS", "8"))
+# Maximum number of retrieval candidates forwarded to Judge #2 (evidence
+# assessment), after filtering by JEV_DISTANCE_THRESHOLD and ranking.
+# Valid range: positive integer; default 15; reads JEV_MAX_PASSAGES from the env.
+JEV_MAX_PASSAGES = int(os.getenv("JEV_MAX_PASSAGES", "15"))
+# L2 distance cap for candidates sent to Jev Judge #2, independent of
+# QUERY_DISTANCE_THRESHOLD. ChromaDB L2 distances: 0 = identical, higher = less
+# similar. Valid range: positive float; default 1.5.
+JEV_DISTANCE_THRESHOLD = float(os.getenv("JEV_DISTANCE_THRESHOLD", "1.5"))
+# Judge #1 gate: minimum in_domain Noul score required for the query to proceed
+# to retrieval. Below it the query is rejected as out_of_domain. Range 0.0–1.0;
+# default 0.40.
+JEV_DOMAIN_MIN = float(os.getenv("JEV_DOMAIN_MIN", "0.40"))
+# Judge #1 gate: maximum specificity Score (range 0–2) allowed before the query
+# is rejected as too_vague. Higher values accept less specific queries; default 1.5.
+JEV_SPEC_MAX = float(os.getenv("JEV_SPEC_MAX", "1.5"))
+# Minimum answerability score (Noul). Used by Judge #1 as answerable_from_code and
+# by Judge #2 as whole-set answerability; below it the result is marked partial or
+# no_answer. Range 0.0–1.0; default 0.50.
+JEV_ANSWERABILITY_MIN = float(os.getenv("JEV_ANSWERABILITY_MIN", "0.50"))
+# Judge #2 gate: minimum relevance Noul score for a passage to be kept.
+# Range 0.0–1.0; default 0.50.
+JEV_RELEVANCE_MIN = float(os.getenv("JEV_RELEVANCE_MIN", "0.50"))
+# Judge #2 gate: minimum evidence Noul score for a passage to be kept.
+# Range 0.0–1.0; default 0.50.
+JEV_EVIDENCE_MIN = float(os.getenv("JEV_EVIDENCE_MIN", "0.50"))
+# Judge #2 gate: maximum prompt-injection score allowed; a passage at or above it
+# is dropped. Range 0.0–1.0; default 0.50.
+JEV_INJECTION_MAX = float(os.getenv("JEV_INJECTION_MAX", "0.50"))
+# Judge #2 gate: minimum contradicts Noul score at which a passage is flagged as
+# conflicting evidence. Range 0.0–1.0; default 0.50.
+JEV_CONTRA_MIN = float(os.getenv("JEV_CONTRA_MIN", "0.50"))
+# Maximum token budget for a rendered Jev report. Valid range: positive integer;
+# default 300; reads JEV_REPORT_MAX_TOKENS from the environment.
+JEV_REPORT_MAX_TOKENS = int(os.getenv("JEV_REPORT_MAX_TOKENS", "300"))
+# When MEMORY_MODE is "local", Jev runs only if this is true. Valid values:
+# true/false (case-insensitive); default false; reads JEV_ALLOW_IN_LOCAL from env.
+JEV_ALLOW_IN_LOCAL = os.getenv("JEV_ALLOW_IN_LOCAL", "false").lower() == "true"
+# Controls Jev error handling. When true, JevUnavailable and unexpected errors
+# fall through to the existing non-Jev pipeline; when false they propagate.
+# Valid values: true/false (case-insensitive); default true.
+JEV_FAIL_OPEN = os.getenv("JEV_FAIL_OPEN", "true").lower() == "true"

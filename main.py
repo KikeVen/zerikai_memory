@@ -22,6 +22,7 @@ from openai import OpenAI
 
 from code_indexer import extract_entities, get_supported_extensions
 from config import (
+    BRIEF_FETCH_CAP,
     CLOUD_ESCALATION_KEYWORDS,
     CLOUD_ESCALATION_WORD_COUNT,
     DB_PATH,
@@ -29,12 +30,31 @@ from config import (
     DEEPSEEK_BASE_URL,
     DEEPSEEK_MODEL_FAST,
     DEEPSEEK_MODEL_PRO,
+    DEEPSEEK_REASONING_EFFORT_BRIEF,
+    DEEPSEEK_REASONING_EFFORT_QUERY,
+    DEEPSEEK_REASONING_EFFORT_SCAN,
+    DEEPSEEK_THINKING_BRIEF,
+    DEEPSEEK_THINKING_QUERY,
+    DEEPSEEK_THINKING_SCAN,
     DEFAULT_MEMORY_MODE,
+    ENABLE_JEV,
     ENABLE_DEEPSEEK_PRO,
     ENABLE_LEXICAL_RERANK,
     ENABLE_TOKEN_TRACKING,
     FETCH_CAP,
+    JEV_ALLOW_IN_LOCAL,
+    JEV_ANSWERABILITY_MIN,
+    JEV_DISTANCE_THRESHOLD,
+    JEV_ENABLE_QUERY_JUDGE,
+    JEV_MAX_PASSAGES,
+    JEV_CONTRA_MIN,
+    JEV_EVIDENCE_MIN,
+    JEV_RELEVANCE_MIN,
+    JEV_INJECTION_MAX,
+    JEV_DOMAIN_MIN,
+    JEV_SPEC_MAX,
     LEXICAL_RERANK_WEIGHT,
+    MEMORY_MODE,
     OLLAMA_HOST,
     OLLAMA_MAX_CONCURRENCY,
     OLLAMA_MODEL,
@@ -43,6 +63,7 @@ from config import (
     SYNTHESIZE_WITH_CLOUD,
     ZERIKAI_DB,
     get_deepseek_pricing,
+    deepseek_thinking_kwargs,
     is_deepseek_peak_hour,
 )
 
@@ -234,36 +255,54 @@ def _track_token_usage(
 
     try:
         # Extract token counts
-        prompt_tokens = getattr(usage, "prompt_tokens", 0)
-        completion_tokens = getattr(usage, "completion_tokens", 0)
-        cache_hit = getattr(usage, "prompt_cache_hit_tokens", 0)
+        prompt_tokens = getattr(usage, "prompt_tokens", None)
+        if prompt_tokens is None:
+            prompt_tokens = getattr(usage, "input_tokens", 0)
+        completion_tokens = getattr(usage, "completion_tokens", None)
+        if completion_tokens is None:
+            completion_tokens = getattr(usage, "output_tokens", 0)
+        cache_hit = getattr(usage, "prompt_cache_hit_tokens", 0) or 0
         # Derive cache_miss from total (OpenAI SDK strips prompt_cache_miss_tokens field)
         # Guarantee: cache_hit + cache_miss = prompt_tokens, matching DeepSeek API contract
         cache_miss = prompt_tokens - cache_hit
 
-        # Determine pricing tier (time-aware — resolves peak vs off-peak at call time)
-        model_key = "v4-pro" if "pro" in model.lower() else "v4-flash"
-        pricing = get_deepseek_pricing(model_key)
+        is_jev = "jev" in model.lower()
+        if is_jev:
+            pricing = {"input": 0.0, "output": 0.0, "cache_hit": 0.0}
+            cost = 0.0
+        else:
+            # Determine pricing tier (time-aware — resolves peak vs off-peak at call time)
+            model_key = "v4-pro" if "pro" in model.lower() else "v4-flash"
+            pricing = get_deepseek_pricing(model_key)
 
-        # Calculate cost: cache hits + cache misses + output
-        cost = (
-            (cache_hit / 1_000_000) * pricing["cache_hit"]
-            + (cache_miss / 1_000_000) * pricing["input"]
-            + (completion_tokens / 1_000_000) * pricing["output"]
-        )
+            # Calculate cost: cache hits + cache misses + output
+            cost = (
+                (cache_hit / 1_000_000) * pricing["cache_hit"]
+                + (cache_miss / 1_000_000) * pricing["input"]
+                + (completion_tokens / 1_000_000) * pricing["output"]
+            )
 
         # Debug: log exact token breakdown and rates for later verification
-        log.info(
-            "COST_CALC_DEBUG | prompt_tokens=%d | cache_hit=%d | cache_miss=%d | completion=%d | rates[input]=$%.4f | rates[output]=$%.4f | rates[cache_hit]=$%.6f | calculated_cost=$%.6f",
-            prompt_tokens,
-            cache_hit,
-            cache_miss,
-            completion_tokens,
-            pricing["input"],
-            pricing["output"],
-            pricing["cache_hit"],
-            cost,
-        )
+        if is_jev:
+            log.info(
+                "COST_CALC_DEBUG | prompt_tokens=%d | cache_hit=%d | cache_miss=%d | completion=%d | pricing=unbilled | calculated_cost=unbilled",
+                prompt_tokens,
+                cache_hit,
+                cache_miss,
+                completion_tokens,
+            )
+        else:
+            log.info(
+                "COST_CALC_DEBUG | prompt_tokens=%d | cache_hit=%d | cache_miss=%d | completion=%d | rates[input]=$%.4f | rates[output]=$%.4f | rates[cache_hit]=$%.6f | calculated_cost=$%.6f",
+                prompt_tokens,
+                cache_hit,
+                cache_miss,
+                completion_tokens,
+                pricing["input"],
+                pricing["output"],
+                pricing["cache_hit"],
+                cost,
+            )
 
         # Store in database
         with sqlite3.connect(str(ZERIKAI_DB), timeout=10) as conn:
@@ -288,12 +327,19 @@ def _track_token_usage(
                 ),
             )
 
-        log.info(
-            "Token tracking | workspace=%s | operation=%s | cost=$%.6f",
-            workspace_id,
-            operation,
-            cost,
-        )
+        if is_jev:
+            log.info(
+                "Token tracking | workspace=%s | operation=%s | tokens tracked; cost not billed",
+                workspace_id,
+                operation,
+            )
+        else:
+            log.info(
+                "Token tracking | workspace=%s | operation=%s | cost=$%.6f",
+                workspace_id,
+                operation,
+                cost,
+            )
 
     except Exception as exc:
         log.error("Token tracking failed: %s", exc)
@@ -512,7 +558,7 @@ async def _build_section(
             # the per-section fetch_cap before sending to the LLM.
             # This lets the re-rank pull in semantically-distant but
             # keyword-relevant files (e.g. todo.md, ROADMAP.md).
-            pool_size = min(FETCH_CAP, total_docs) if total_docs > 0 else 1
+            pool_size = min(BRIEF_FETCH_CAP, total_docs) if total_docs > 0 else 1
             results = collection.query(
                 query_texts=[section["query"]],
                 n_results=pool_size,
@@ -580,6 +626,12 @@ async def _build_section(
                 ],
                 temperature=0,
                 max_tokens=2048,
+                # Brief sections are grounded/extractive summarization, not
+                # reasoning tasks. Thinking is on by default (effort=high) and
+                # otherwise consumes most of the output budget as CoT tokens —
+                # disabled by default so max_tokens goes to the section text.
+                # DeepSeek-only kwarg; the Ollama branch never receives it.
+                **deepseek_thinking_kwargs(DEEPSEEK_THINKING_BRIEF, DEEPSEEK_REASONING_EFFORT_BRIEF),
             )
             content = response.choices[0].message.content.strip()
             usage = getattr(response, "usage", None)
@@ -659,8 +711,8 @@ async def _synthesize_deep_brief(
             "prompt_template": (
                 f"You are a senior software architect analyzing the `{display_name}` project. "
                 "Based on the following file summaries from the codebase, list the Technical Stack. "
-                "Be concise and direct. Start directly with 'Listing only primary libraries, max 5:' — no other introductory text.\n\n"
-                "IMPORTANT: Only list the 5-10 most important PRIMARY dependencies. "
+                "Be concise and direct. Start directly with 'Listing only primary libraries, max 10:' — no other introductory text.\n\n"
+                "IMPORTANT: Only list up to 10 of the most important PRIMARY dependencies. "
                 "Omit transitive dependencies, low-level utilities, and standard library modules. "
                 "Focus on frameworks, databases, APIs, and major integrations that define the project's architecture.\n\n"
                 "Use this format:\n\n"
@@ -813,7 +865,14 @@ async def _synthesize_deep_brief(
     ]
 
     async def _build_section_safe(s: dict):
-        """Wrapper to gate Ollama calls via semaphore during local synthesis."""
+        """Gate Ollama synthesis calls via the shared ollama_semaphore.
+        Inner helper for _synthesize_deep_brief, run via asyncio.gather. When
+        the enclosing use_cloud flag is False (local Ollama) it acquires
+        ollama_semaphore before delegating to _build_section, capping local
+        concurrency to avoid VRAM thrashing; when True (DeepSeek cloud) it
+        delegates directly. Forwards _build_section's (heading, content) tuple,
+        including its error path. No side effects beyond the delegated call.
+        """
         if not use_cloud:
             async with ollama_semaphore:
                 return await _build_section(
@@ -984,7 +1043,11 @@ def _build_system_message(workspace_id: str) -> str:
 # .memignore helpers
 # ---------------------------------------------------------------------------
 
-# Text extensions we are willing to read and summarise.
+# Text file extensions eligible for scan_workspace ingestion. Files whose
+# suffix is in this set are read and summarised (tree-sitter entity extraction
+# for code, LLM chunk summary otherwise); any other suffix is skipped.
+# Lower-case with leading dot, e.g. ".py". Consumed by _background_scan's
+# eligibility filter alongside _MAX_FILE_BYTES and .memignore.
 _TEXT_EXTENSIONS = {
     ".py",
     ".pyw",
@@ -1014,7 +1077,10 @@ _TEXT_EXTENSIONS = {
     ".h",
 }
 
-# Never read files larger than this (bytes).
+# Maximum file size in bytes read during scan_workspace. Files larger than
+# this are skipped entirely (not truncated) to avoid exhausting DeepSeek/Ollama
+# context. Valid range: positive int; default 200_000 (200 KB). Consumed by
+# _background_scan alongside _TEXT_EXTENSIONS and .memignore.
 _MAX_FILE_BYTES = 200_000  # Increased from 100KB to 200KB to include main.py
 
 # Files larger than this (in lines) are split into chunks before indexing.
@@ -1071,6 +1137,9 @@ def _is_ignored(file_path: Path, workspace_root: Path, patterns: list[str]) -> b
         if fnmatch.fnmatch(rel_posix, pattern) or fnmatch.fnmatch(
             file_path.name, pattern
         ):
+            return True
+        # 3. Match prefix paths for directory patterns spanning multiple parts
+        if rel_posix.startswith(p + "/"):
             return True
 
     return False
@@ -1384,6 +1453,12 @@ async def save_to_memory(
                 model=DEEPSEEK_MODEL_FAST,
                 messages=[{"role": "user", "content": index_prompt}],
                 max_tokens=max_tok,
+                temperature=0,
+                # File indexing is extractive summarization — thinking is
+                # disabled by default so the token budget goes to the summary,
+                # not CoT. temperature=0 keeps summaries deterministic.
+                # DeepSeek-only kwarg; the Ollama branch never receives it.
+                **deepseek_thinking_kwargs(DEEPSEEK_THINKING_SCAN, DEEPSEEK_REASONING_EFFORT_SCAN),
             )
             summary = response.choices[0].message.content.strip()
 
@@ -1470,6 +1545,124 @@ async def query_memory(
         workspace_id, display_name, workspace_path = _resolve_workspace(workspace)
         collection = _get_collection(workspace_id)
 
+        def _query_contains_exact_symbol(query_text: str) -> bool:
+            """Return True if the query contains an exact indexed symbol name.
+            Runs only when Jev is enabled so the disabled path stays byte-identical.
+            Uses exact metadata-name equality via ChromaDB where filters rather than
+            semantic retrieval.
+            """
+            candidates = {
+                token
+                for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", query_text)
+                if len(token) >= 2
+            }
+            for symbol in sorted(candidates, key=len, reverse=True):
+                match = collection.get(
+                    where={"name": symbol},
+                    limit=1,
+                    include=["metadatas"],
+                )
+                if match.get("metadatas"):
+                    return True
+            return False
+
+        skip_query_judge = False
+        if ENABLE_JEV:
+            if not JEV_ENABLE_QUERY_JUDGE:
+                skip_query_judge = True
+                skip_reason = "Judge #1 disabled (JEV_ENABLE_QUERY_JUDGE=false)"
+            elif _query_contains_exact_symbol(user_query):
+                skip_query_judge = True
+                skip_reason = "exact symbol detected"
+            else:
+                skip_reason = ""
+            if skip_query_judge:
+                log.info(
+                    "query_memory | Judge #1 skipped (%s) workspace=%s query=%r",
+                    skip_reason,
+                    workspace_id,
+                    user_query,
+                )
+
+        if ENABLE_JEV and not (MEMORY_MODE == "local" and not JEV_ALLOW_IN_LOCAL):
+            if not skip_query_judge:
+                from jev.assess import (
+                    assess_query,
+                    reset_tracking_workspace_id,
+                    set_tracking_workspace_id,
+                )
+
+                total_entities = collection.count()
+                summary_cap = min(total_entities, 500) if total_entities > 0 else 0
+                summary_results = (
+                    collection.get(
+                        where={"category": "codebase"},
+                        limit=summary_cap,
+                        include=["metadatas"],
+                    )
+                    if summary_cap
+                    else {"metadatas": []}
+                )
+                summary_metas = summary_results.get("metadatas", [])
+
+                language_counts: dict[str, int] = {}
+                top_dir_counts: dict[str, int] = {}
+                for meta in summary_metas:
+                    meta = meta or {}
+                    source_file = meta.get("source_file", "")
+                    language = meta.get("language")
+                    if not language and source_file:
+                        suffix = Path(source_file).suffix.lower().lstrip(".")
+                        language = suffix or None
+                    if language:
+                        language_counts[str(language)] = language_counts.get(str(language), 0) + 1
+                    if source_file:
+                        parent_dir = Path(source_file).parent.as_posix().strip("./")
+                        if parent_dir:
+                            top_dir_counts[parent_dir] = top_dir_counts.get(parent_dir, 0) + 1
+
+                index_summary = {
+                    "entities": total_entities,
+                    "languages": [
+                        language
+                        for language, _count in sorted(
+                            language_counts.items(), key=lambda item: (-item[1], item[0])
+                        )[:5]
+                    ],
+                    "top_dirs": [
+                        directory
+                        for directory, _count in sorted(
+                            top_dir_counts.items(), key=lambda item: (-item[1], item[0])
+                        )[:5]
+                    ],
+                }
+                brief = _load_project_context(workspace_id)
+                tracking_token = set_tracking_workspace_id(workspace_id)
+                try:
+                    query_assessment = await assess_query(
+                        user_query, brief, index_summary
+                    )
+                finally:
+                    reset_tracking_workspace_id(tracking_token)
+                if query_assessment is None:
+                    log.info(
+                        "query_memory | Judge #1 unavailable; proceeding fail-open workspace=%s query=%r",
+                        workspace_id,
+                        user_query,
+                    )
+                else:
+                    from jev.compose import compose_query
+                    from jev.report import render_no_answer
+
+                    query_decision = compose_query(
+                        query_assessment,
+                        domain_min=JEV_DOMAIN_MIN,
+                        spec_max=JEV_SPEC_MAX,
+                        answerability_min=JEV_ANSWERABILITY_MIN,
+                    )
+                    if query_decision.get("no_answer"):
+                        return render_no_answer()
+
         # 1. Semantic retrieval — scoped to this workspace's collection
         # Strip source-table request phrases from the search query so DeepSeek
         # doesn't try to acknowledge/deny a table it can't see (we prepend it).
@@ -1493,6 +1686,7 @@ async def query_memory(
         docs = results.get("documents", [[]])[0]
         metas = results.get("metadatas", [[]])[0]
         distances = results.get("distances", [[]])[0]
+        evidence_decision = None
 
         # Check if anything was retrieved
         if not docs:
@@ -1512,8 +1706,16 @@ async def query_memory(
                 for doc, meta, dist in zip(docs, metas, distances)
                 if dist <= QUERY_DISTANCE_THRESHOLD
             ]
+            jev_active = ENABLE_JEV and not (
+                MEMORY_MODE == "local" and not JEV_ALLOW_IN_LOCAL
+            )
+            jev_candidates = [
+                (doc, meta, dist)
+                for doc, meta, dist in zip(docs, metas, distances)
+                if dist <= JEV_DISTANCE_THRESHOLD
+            ]
 
-            if not relevant:
+            if not relevant and not (jev_active and jev_candidates):
                 best = min(distances)
                 log.info(
                     "query_memory | no results below threshold (best dist=%.3f) workspace=%s query=%r",
@@ -1530,37 +1732,124 @@ async def query_memory(
                     len(docs),
                     workspace_id,
                 )
-
-                # Lexical re-ranking — reorder by keyword-overlap boost.
-                # Pure reorder: nothing is dropped. Weight is tuned to nudge
-                # within the ~0.156 1/dist valid-hit spread without overriding
-                # genuinely closer semantic results.
-                if ENABLE_LEXICAL_RERANK:
-                    query_terms = set(user_query.lower().split())
-
-                    reranked_relevant = []
-                    for doc, meta, dist in relevant:
-                        name = (meta or {}).get("name", "").lower()
-                        text = doc.lower()
-                        hits = sum(1 for t in query_terms if t in name or t in text)
-                        # Guard against divide-by-zero for exact vector matches (dist=0)
-                        inv_dist = 1.0 / dist if dist > 1e-6 else 1000000.0
-                        rerank_score = inv_dist + (hits * LEXICAL_RERANK_WEIGHT)
-                        reranked_relevant.append((doc, meta, dist, rerank_score))
-
-                    reranked_relevant = sorted(
-                        reranked_relevant, key=lambda item: item[3], reverse=True
+                evidence_assessment = None
+                candidates = relevant
+                judge_candidates = (
+                    jev_candidates[:JEV_MAX_PASSAGES]
+                    if jev_active
+                    else []
+                )
+                if jev_active:
+                    from jev.assess import (
+                        assess_evidence,
+                        reset_tracking_workspace_id,
+                        set_tracking_workspace_id,
                     )
-                    log.info(
-                        "query_memory | lexical re-rank applied, top result: %s",
-                        (reranked_relevant[0][1] or {}).get("name", "unknown"),
-                    )
-                    relevant_for_evidence = reranked_relevant
-                else:
-                    # Add a placeholder for the rerank score when it's disabled
+
+                    evidence_passages = []
+                    for index, (doc, meta, dist) in enumerate(judge_candidates):
+                        meta = meta or {}
+                        source_file = meta.get("source_file", "")
+                        lineno = meta.get("lineno", "")
+                        name = meta.get("name", "")
+                        evidence_passages.append(
+                            {
+                                "id": f"{index}:{source_file}:{lineno}:{name}",
+                                "source_file": source_file,
+                                "lineno": lineno,
+                                "name": name,
+                                "text": doc,
+                                "l2_distance": dist,
+                            }
+                        )
+
+                    try:
+                        tracking_token = set_tracking_workspace_id(workspace_id)
+                        try:
+                            evidence_assessment = await assess_evidence(
+                                user_query, evidence_passages
+                            )
+                        finally:
+                            reset_tracking_workspace_id(tracking_token)
+                        if evidence_assessment is None:
+                            log.info(
+                                "query_memory | Judge #2 unavailable; proceeding fail-open workspace=%s query=%r",
+                                workspace_id,
+                                user_query,
+                            )
+                        else:
+                            from jev.compose import compose_evidence
+                            from jev.report import render_no_answer
+
+                            evidence_decision = compose_evidence(
+                                evidence_assessment,
+                                evidence_passages,
+                                rel_min=JEV_RELEVANCE_MIN,
+                                evid_min=JEV_EVIDENCE_MIN,
+                                inj_max=JEV_INJECTION_MAX,
+                                contra_min=JEV_CONTRA_MIN,
+                                answerability_min=JEV_ANSWERABILITY_MIN,
+                            )
+                            if evidence_decision.get("no_answer"):
+                                return render_no_answer()
+                    except Exception as exc:
+                        log.warning(
+                            "query_memory | Judge #2 handling failed; proceeding fail-open workspace=%s query=%r error=%s",
+                            workspace_id,
+                            user_query,
+                            exc,
+                        )
+
+                if evidence_decision is not None:
+                    if ENABLE_LEXICAL_RERANK:
+                        log.info("query_memory | lexical rerank superseded by Jev")
                     relevant_for_evidence = [
-                        (doc, meta, dist, None) for doc, meta, dist in relevant
+                        (
+                            passage.get("text", ""),
+                            {
+                                "source_file": passage.get("source_file", ""),
+                                "lineno": passage.get("lineno", ""),
+                                "name": passage.get("name", ""),
+                            },
+                            passage.get("l2_distance"),
+                            None,
+                        )
+                        for passage in evidence_decision.get("included", [])
                     ]
+                elif not candidates:
+                    context = "No specific code snippets found below distance threshold."
+                    relevant_for_evidence = []
+                else:
+                    # Lexical re-ranking — reorder by keyword-overlap boost.
+                    # Pure reorder: nothing is dropped. Weight is tuned to nudge
+                    # within the ~0.156 1/dist valid-hit spread without overriding
+                    # genuinely closer semantic results.
+                    if ENABLE_LEXICAL_RERANK:
+                        query_terms = set(user_query.lower().split())
+
+                        reranked_relevant = []
+                        for doc, meta, dist in candidates:
+                            name = (meta or {}).get("name", "").lower()
+                            text = doc.lower()
+                            hits = sum(1 for t in query_terms if t in name or t in text)
+                            # Guard against divide-by-zero for exact vector matches (dist=0)
+                            inv_dist = 1.0 / dist if dist > 1e-6 else 1000000.0
+                            rerank_score = inv_dist + (hits * LEXICAL_RERANK_WEIGHT)
+                            reranked_relevant.append((doc, meta, dist, rerank_score))
+
+                        reranked_relevant = sorted(
+                            reranked_relevant, key=lambda item: item[3], reverse=True
+                        )
+                        log.info(
+                            "query_memory | lexical re-rank applied, top result: %s",
+                            (reranked_relevant[0][1] or {}).get("name", "unknown"),
+                        )
+                        relevant_for_evidence = reranked_relevant
+                    else:
+                        # Add a placeholder for the rerank score when it's disabled
+                        relevant_for_evidence = [
+                            (doc, meta, dist, None) for doc, meta, dist in candidates
+                        ]
 
                 # Final number of reranked results passed to synthesis — kept separate from
                 # FETCH_CAP (which only controls the pre-rerank candidate pool size) to cap
@@ -1568,53 +1857,54 @@ async def query_memory(
                 relevant_for_evidence = relevant_for_evidence[:5]
 
                 # Build location-tagged context and sources list
-                context_parts = []
                 evidence_list = []
-                for doc, meta, dist, rerank_score in relevant_for_evidence:
-                    meta = meta or {}
-                    src_file = meta.get("source_file", "")
-                    lineno = meta.get("lineno", "")
-                    name = meta.get("name", "")
-                    entity_type = meta.get("entity_type", "")
-                    parent = meta.get("parent_class", "")
+                if relevant_for_evidence:
+                    context_parts = []
+                    for doc, meta, dist, rerank_score in relevant_for_evidence:
+                        meta = meta or {}
+                        src_file = meta.get("source_file", "")
+                        lineno = meta.get("lineno", "")
+                        name = meta.get("name", "")
+                        entity_type = meta.get("entity_type", "")
+                        parent = meta.get("parent_class", "")
 
-                    evidence_item = {
-                        "source_file": src_file,
-                        "lineno": lineno,
-                        "name": name,
-                        "entity_type": entity_type,
-                        "l2_distance": dist,
-                    }
-                    if rerank_score is not None:
-                        evidence_item["rerank_score"] = rerank_score
-                    evidence_list.append(evidence_item)
+                        evidence_item = {
+                            "source_file": src_file,
+                            "lineno": lineno,
+                            "name": name,
+                            "entity_type": entity_type,
+                            "l2_distance": dist,
+                        }
+                        if rerank_score is not None:
+                            evidence_item["rerank_score"] = rerank_score
+                        evidence_list.append(evidence_item)
 
-                    score, score_label = _get_score_tuple(evidence_item)
-                    score_str = (
-                        f"{score:.2f} {score_label}"
-                        if score is not None
-                        else "no score"
-                    )
+                        score, score_label = _get_score_tuple(evidence_item)
+                        score_str = (
+                            f"{score:.2f} {score_label}"
+                            if score is not None
+                            else "no score"
+                        )
 
-                    location_label = ""
-                    if src_file and lineno:
-                        location = f"{src_file}:{lineno}"
-                        if name and entity_type:
-                            label = f"{name} ({entity_type})"
-                            if parent:
-                                label += f" in {parent}"
-                            location_label = (
-                                f"[{location}] {label} — score: {score_str}"
-                            )
+                        location_label = ""
+                        if src_file and lineno:
+                            location = f"{src_file}:{lineno}"
+                            if name and entity_type:
+                                label = f"{name} ({entity_type})"
+                                if parent:
+                                    label += f" in {parent}"
+                                location_label = (
+                                    f"[{location}] {label} — score: {score_str}"
+                                )
+                            else:
+                                location_label = f"[{location}] — score: {score_str}"
+
+                        if location_label:
+                            context_parts.append(f"{location_label}\n{doc}")
                         else:
-                            location_label = f"[{location}] — score: {score_str}"
+                            context_parts.append(doc)
 
-                    if location_label:
-                        context_parts.append(f"{location_label}\n{doc}")
-                    else:
-                        context_parts.append(doc)
-
-                context = "\n\n".join(context_parts)
+                    context = "\n\n".join(context_parts)
 
         # 2. Route and synthesise
         if _should_use_cloud(user_query, use_cloud):
@@ -1648,6 +1938,18 @@ async def query_memory(
             return "\n".join(lines)
 
         # Final return — plain string again, no JSON
+        if evidence_decision is not None:
+            from jev.report import render_report
+
+            report = render_report(
+                {
+                    "answer": answer,
+                    **evidence_decision,
+                }
+            )
+            return report + _format_sources_block(
+                evidence_list if "evidence_list" in locals() else []
+            )
         return answer + _format_sources_block(
             evidence_list if "evidence_list" in locals() else []
         )
@@ -1683,6 +1985,7 @@ async def _query_deepseek(context: str, user_query: str, workspace_id: str) -> s
         model=model,
         messages=messages,
         max_tokens=1024,
+        **deepseek_thinking_kwargs(DEEPSEEK_THINKING_QUERY, DEEPSEEK_REASONING_EFFORT_QUERY),
     )
 
     choice = response.choices[0]
@@ -2647,13 +2950,21 @@ async def get_cost_report(
         ]
 
         for row in results:
-            lines.append(
-                f"{row['operation']:<20} "
-                f"{row['model']:<20} "
-                f"{row['call_count']:<8} "
-                f"${row['total_cost']:>10.4f}     "
-                f"${row['avg_cost_per_call']:>8.6f}"
-            )
+            if str(row["operation"]).startswith("jev_"):
+                lines.append(
+                    f"{row['operation']:<20} "
+                    f"{row['model']:<20} "
+                    f"{row['call_count']:<8} "
+                    "tokens tracked; cost not billed"
+                )
+            else:
+                lines.append(
+                    f"{row['operation']:<20} "
+                    f"{row['model']:<20} "
+                    f"{row['call_count']:<8} "
+                    f"${row['total_cost']:>10.4f}     "
+                    f"${row['avg_cost_per_call']:>8.6f}"
+                )
 
         lines.append("-" * 85)
         lines.append(

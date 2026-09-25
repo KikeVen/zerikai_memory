@@ -38,14 +38,29 @@ This project is used daily and actively maintained by the author. Pull Requests 
 
 ---
 
+## 🆕 New — Jev Semantic Judgment Layer
+
+zerikai_memory now integrates **Jev**, TypeSafe AI's *System One* model — a fast, structured judgment engine that decides **which retrieved passages actually answer your question** and attaches a plain-text evidence report to every answer.
+
+- **What it is:** a second, narrow AI layer beside your LLM. Your LLM writes the answer; Jev judges the evidence it is built from. It returns calibrated probabilities — not prose.
+- **What it does:** per-passage relevance / evidence / contradiction / prompt-injection scoring, better passage ordering (replaces keyword rerank), and a plain-text `Assessment / Evidence / Guidance` report the agent can act on. Injection attempts are dropped.
+- **Off by default:** with `ENABLE_JEV=false` behavior is byte-identical to before, and it is fully fail-open — if Jev is unavailable, the normal pipeline runs.
+- **Activate it:** set `TYPESAFE_API_KEY` and `ENABLE_JEV=true` in `.env`, then restart the server.
+- **Get the API key:** TypeSafe early access → **[console.typesafe.ai](https://console.typesafe.ai)**.
+
+📖 **Full details — how the judgment layer works and every parameter:
+[documentation/10-jev-judgment-layer.md](documentation/10-jev-judgment-layer.md)**
+
+---
+
 ## The Problem
 
 Every new chat session starts completely cold. When you switch contexts or open a new window:
 
-* Your AI Agent forgets every architectural decision, convention, and stack choice made over hours
-* You waste critical tokens and 10–15 minutes re-explaining the codebase setup in every single chat
-* Large raw file dumps inflate your token costs and shrink your available context window instantly
-* Switching IDEs (e.g., VS Code to Cursor) forces you to restart your conversation history from scratch
+- Your AI Agent forgets every architectural decision, convention, and stack choice made over hours
+- You waste critical tokens and 10–15 minutes re-explaining the codebase setup in every single chat
+- Large raw file dumps inflate your token costs and shrink your available context window instantly
+- Switching IDEs (e.g., VS Code to Cursor) forces you to restart your conversation history from scratch
 
 ## How Zerikai Memory Solves It
 
@@ -75,8 +90,8 @@ Your IDE       →  MCP Server (:stdio)        →        ▼
 | What gets taxed | Without Zerikai | With Zerikai |
 | --- | --- | --- |
 | 🔴 **Monthly quota** | Re-explaining stack, decisions, and conventions every session | Indexed once. Retrieved as compact snippets per query. |
-| 🟡 **Context window** | Raw file dumps shrink the window available for code generation | 1,000–1,200 token brief prefix*. Window stays wide open.  |
-| ⚪ **IDE switching** | Full re-explanation required in every new tool | Shared zerikai_memory workspace `.brain/` directory.  |
+| 🟡 **Context window** | Raw file dumps shrink the window available for code generation | 1,000–1,200 token brief prefix*. Window stays wide open. |
+| ⚪ **IDE switching** | Full re-explanation required in every new tool | Shared zerikai_memory workspace `.brain/` directory. |
 
 > **Tip:** The project brief acts as a stable prefix. After your first query, DeepSeek caches it — making subsequent repeated queries **50–100× cheaper** (rate depends on whether you are in peak or off-peak hours). See the [DeepSeek Pricing](#deepseek-pricing) section for current rates.
 
@@ -137,6 +152,21 @@ ENABLE_TOKEN_TRACKING=true
 # Recommended: keep this "false" unless you need maximum reasoning capability
 ENABLE_DEEPSEEK_PRO=false
 
+# DeepSeek thinking mode (chain-of-thought). Docs:
+# https://api-docs.deepseek.com/guides/thinking_mode/
+# Thinking is ON by default at effort "high" when no parameter is sent.
+# Options per path: enabled | disabled. "disabled" is right for extractive work.
+# NOTE: briefs and query synthesis are separate pipelines with separate toggles.
+DEEPSEEK_THINKING_BRIEF=disabled   # 9-section project brief generation
+DEEPSEEK_THINKING_SCAN=disabled    # per-file indexing summaries
+DEEPSEEK_THINKING_QUERY=disabled   # query_memory answer synthesis
+
+# Reasoning effort per path when that path is "enabled": low | high | max.
+# Ignored when the matching path is "disabled". "low" is the cheapest enabled tier.
+DEEPSEEK_REASONING_EFFORT_BRIEF=low
+DEEPSEEK_REASONING_EFFORT_SCAN=low
+DEEPSEEK_REASONING_EFFORT_QUERY=low
+
 # Semantic search relevance cutoff for query_memory (L2 distance).
 # Lower = stricter. Watch "best dist=X.XX" in server.log to calibrate.
 # Typical: <0.8 strong match, 0.8-1.5 related, >1.5 noise.
@@ -162,6 +192,12 @@ ENABLE_LEXICAL_RERANK=true
 # a genuinely closer semantic result.
 # Recommended starting point: 0.05 (one hit = +0.05, two hits = +0.10).
 LEXICAL_RERANK_WEIGHT=0.05
+
+# Candidate pool per section for project-brief synthesis. Each section queries
+# ChromaDB, re-ranks locally, then trims to a per-section cap (20/25/30).
+# Decoupled from FETCH_CAP (query-only) so a tight query pool doesn't starve
+# the brief. Default: 20.
+BRIEF_FETCH_CAP=20
 ```
 
 </details>
@@ -180,8 +216,8 @@ To stop your AI agent from ignoring the memory protocol, copy these directives i
 
 **IDE Rules in:** [agent_rules/ide_agent_rules.md](agent_rules/ide_agent_rules.md)
 
-* **Universal-Brain First:** The agent *must* query `universal-brain` before attempting raw file searches.
-* **Source Discipline:** Every answer *must* surface actual `file.py:line` citations with zero fabrication.
+- **Universal-Brain First:** The agent *must* query `universal-brain` before attempting raw file searches.
+- **Source Discipline:** Every answer *must* surface actual `file.py:line` citations with zero fabrication.
 
 ### 4. IDE Registration
 
@@ -240,8 +276,8 @@ build/
 
 Before running your first index scan, optimize your codebase's docstrings for vector search. Ask your AI Agent:
 
-* To install the embedding-docstring globally in your IDE and run it against your codebase to rewrite docstrings into a more embedding-friendly format.
-  * You can find it in the [embedding-docstring skill guide](embedding-docstring/SKILL.md).
+- To install the embedding-docstring globally in your IDE and run it against your codebase to rewrite docstrings into a more embedding-friendly format.
+  - You can find it in the [embedding-docstring skill guide](embedding-docstring/SKILL.md).
 
 > *"Audit and optimize docstrings across this project using the embedding-docstring skill, respecting .memignore."*
 
@@ -257,14 +293,14 @@ Simply instruct your IDE's active AI agent using natural language commands:
 
 prefix queries with **"universal-brain: \<command>"** to ensure they route through the MCP server and leverage your indexed memory:
 
-* Scan the workspace for the first time: `"Set up memory for this project"`
-* Ask a question: `"What are the main architectural components of this project?"`
+- Scan the workspace for the first time: `"Set up memory for this project"`
+- Ask a question: `"What are the main architectural components of this project?"`
 
 **Frequently used follow-ups:**
 
-* After a code change: `"Rescan the workspace and force a refresh of the project brief."`
-* Save part of a chat: `"Save the following context to memory: [your custom notes or constraints here]"`
-* Ask how much have you used: `"Get me a cost report for my memory usage so far."`
+- After a code change: `"Rescan the workspace and force a refresh of the project brief."`
+- Save part of a chat: `"Save the following context to memory: [your custom notes or constraints here]"`
+- Ask how much have you used: `"Get me a cost report for my memory usage so far."`
 
 See below for a full reference of available commands and their descriptions.
 
@@ -320,7 +356,7 @@ You never run these commands directly; your active AI agent executes them on you
 ### Workspace Management
 
 | Tool | Description |
-|---|---|
+| --- | --- |
 | `init_workspace` | Registers a project folder, assigns a UUID, and creates a pending brief file. Idempotent; safe to run multiple times. |
 | `list_workspaces` | Lists all known workspaces that have a brief or stored memories. |
 | `resolve_workspace` | Resolves a workspace identifier (UUID, short-UUID, or display name) to its filesystem path. |
@@ -330,7 +366,7 @@ You never run these commands directly; your active AI agent executes them on you
 ### Memory & Briefs
 
 | Tool | Description |
-|---|---|
+| --- | --- |
 | `scan_workspace` | Starts a background scan. Returns immediately; use `scan_status` to track progress. Walks the directory, respects `.memignore`, saves all readable text files to persistent memory. Idempotent and self-cleaning. Concurrent (4 workers, batch writes). |
 | `scan_status` | Returns progress of a running or recently completed background scan: files scanned, entities indexed, errors, elapsed time, brief status. |
 | `save_to_memory` | Manually saves an architectural decision, fact, or technical note with an optional category tag. |
@@ -342,7 +378,7 @@ You never run these commands directly; your active AI agent executes them on you
 ### Usage & Diagnostics
 
 | Tool | Description |
-|---|---|
+| --- | --- |
 | `get_token_usage` | Returns DeepSeek API token usage and cost statistics. |
 | `get_cost_report` | Generates a cost breakdown by operation type. Prepends a live **PEAK / OFF-PEAK** banner showing currently active rates. |
 | `get_cache_stats` | Shows cache hit/miss rates by operation type. |
@@ -404,7 +440,7 @@ DeepSeek uses **peak / off-peak pricing** across all tiers. Off-peak rates are e
 ### Rate Table (USD per 1M tokens)
 
 | Tier | deepseek-flash input | deepseek-flash output | deepseek-flash cached | v4-pro input | v4-pro output | v4-pro cached |
-|---|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- | --- |
 | **Peak** | $0.30 | $1.20 | $0.006 | $1.32 | $3.96 | $0.044 |
 | **Off-peak** | $0.15 | $0.60 | $0.003 | $0.66 | $1.98 | $0.022 |
 
@@ -416,7 +452,7 @@ The tool automatically resolves the correct tier at call time — no manual conf
 > Offsets shown for **summer / daylight saving time (DST)**. In winter, US timezones shift 1 hour later; European zones shift 1 hour earlier — meaning off-peak windows shift accordingly.
 
 | Region | UTC offset (summer) | Peak local time (Mon–Fri) | ✅ Off-peak local time |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | **EST** (New York, Miami) | UTC−5 | 8pm–11pm & 1am–5am | **5am–8pm** and 11pm–1am (+ all weekend) |
 | **CST** (Chicago, Dallas) | UTC−6 | 7pm–10pm & midnight–4am | **4am–7pm** and 10pm–midnight (+ all weekend) |
 | **PST** (Los Angeles, Seattle) | UTC−8 | 5pm–8pm & 10pm–2am | **2am–5pm** and 8pm–10pm (+ all weekend) |
@@ -461,8 +497,8 @@ Get-Content .brain\server.log -Wait -Tail 30
 
 ## Security & Data Privacy
 
-* All active vector spaces, tracking registries, and context details reside directly on your local machine.
-* Add `.env` and `.brain/` explicitly to your global or project `.gitignore` patterns to prevent API keys and secure indexes from leaking to version control platforms.
+- All active vector spaces, tracking registries, and context details reside directly on your local machine.
+- Add `.env` and `.brain/` explicitly to your global or project `.gitignore` patterns to prevent API keys and secure indexes from leaking to version control platforms.
 
 ---
 
