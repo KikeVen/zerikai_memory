@@ -1,128 +1,228 @@
----
-name: universal-brain-query
-description: Use when querying universal-brain memory for any codebase question — architecture, functions, patterns, decisions, or prior session context. Trigger this skill whenever the user mentions universal-brain, asks about their codebase, wants to find a function, understand a module, trace a pipeline, or look up a past decision. Also trigger when the user opens a session with a project context and hasn't yet resolved a workspace — the skill's entry checks ensure the session is grounded before any query runs. Proactively invoke this rather than querying universal-brain cold.
----
-
 # Universal-Brain Query Skill
 
-This skill is **guidance**, not a script. You call the MCP tools directly — this tells you how to think about the sequence, the query shape, and what the responses mean. Exercise judgment on every call.
+**Location:** `universal-brain-query/SKILL.md`
 
-MCP tool name `universal-brain`
+Queries the project memory layer to answer architecture, implementation, and historical-decision questions using semantic retrieval instead of keyword guessing. This skill is used when you need to find a function, trace a pipeline, locate an edge case, or confirm how the codebase behaves in practice.
+
+> **Do not query memory cold.** Resolve the workspace, read the brief, and confirm scan health before asking the semantic search for implementation answers.
 
 ---
 
-## On Entry — Three Checks Before Any Query
+## Prerequisites
 
-Before doing anything else, verify the session is ready. Do not skip these.
+Before invoking the skill, confirm:
 
-**1. MCP availability**
-Attempt `list_workspaces()`. If the tool is not found or the call fails, stop and tell the user:
+1. The `universal-brain` MCP is active and available in the IDE.
+2. The target workspace is resolved explicitly — do not assume the current folder is correct.
+3. The workspace brief is available and the scan has been run recently enough to be trustworthy.
+4. The user has not asked for a broad grep dump. This skill is for targeted semantic discovery.
+
+---
+
+## Entry Checks
+
+The skill follows a strict startup sequence.
+
+### 1. MCP availability
+
+Attempt `list_workspaces()`. If the tool is unavailable or the call fails, stop and tell the user:
+
 > "universal-brain MCP is not active — enable it in your MCP server settings and retry."
-Do not proceed without it.
 
-**2. Workspace resolution**
-If the user named a workspace or project, pass it to `resolve_workspace(identifier)`. Echo the resolved path back in one line before running any queries:
+Do not continue with a query.
+
+### 2. Workspace resolution
+
+If the user named a workspace or project, pass it to `resolve_workspace(identifier)`. Echo the resolved path back once before running any queries:
+
 > "Using workspace: gh_repo_traffic → d:/users/.../gh_repo_traffic"
 
 If no workspace was named, call `list_workspaces()`, show the options, and ask the user which one to use. Never guess or assume a path.
 
-**3. Workspace health**
-Call `get_brief(workspace)` immediately after resolving. This reads a pre-synthesized architecture brief and often answers orientation questions without a vector search. Also call `scan_status(workspace)` — if no scan has run or a scan is in progress, tell the user before querying, since results may be incomplete or stale.
+### 3. Workspace health
+
+Call `get_brief(workspace)` immediately after resolving. This reads the synthesized architecture brief and often answers orientation questions without a vector search.
+
+Then call `scan_status(workspace)`. If no scan has run or a scan is in progress, tell the user before querying — stale or partial results can hide the real implementation path.
 
 ---
 
-## Query Strategy — Natural Language, Not Keywords
+## Query Strategy
 
-This is the most important thing in this skill.
+This skill is built around natural-language reasoning, not keyword packing.
 
-`query_memory` runs semantic vector search. It responds to *meaning*, not keyword density. Keyword dumps match on surface terms and return documentation noise — READMEs, skill files, schema comments. A natural question aimed at a named function or behavior pulls the actual implementation chunk.
+`query_memory` is a semantic search over embedded code and documentation chunks. It responds to meaning, not to a dense pile of symbols.
 
-**Don't do this:**
+**Avoid this style of query:**
 
-```
+```text
 "views clones union intersection zero fill ingester"
 ```
 
-**Do this:**
+**Prefer this style instead:**
 
-```
+```text
 "How does sync_repository fetch and write daily traffic data?"
 "What does is_snapshot_stale check for?"
 "What are the main functions in the ingestion pipeline?"
 ```
 
-Ask what a developer would ask a colleague who wrote the code.
+Ask what a developer would ask a colleague who wrote the code. Good questions map to behavior, not raw token lists.
 
 ---
 
-## Drill-Down — Three Layers
+## Drill-Down Flow
 
-Treat `universal-brain` like a knowledge graph. Navigate it in layers, using what each layer returns to form the next question. Never jump to Layer 3 without passing through Layer 1 and 2 — you will keyword-dump and miss.
+Treat memory like a layered knowledge graph. Move through it in stages rather than jumping directly to a single answer.
 
-**Layer 1 — Map:** Get entry points, pipeline stages, module names. Goal: function and file names to use in Layer 2.
-> "What are the main functions in the ingestion pipeline?"
-> "What modules make up the API layer?"
+### Layer 1 — Map
 
-**Layer 2 — Locate:** Use names from Layer 1 to ask targeted questions about specific functions.
-> "How does sync_repository write to the database?"
-> "What does fetch_github_api return?"
+Goal: identify entry points, pipeline stages, or module names.
 
-**Layer 3 — Drill:** Ask about specific behavior, edge cases, or logic within a located function.
-> "What happens when GitHub returns views but no clones for a date?"
-> "How does the upsert handle a conflict on repo_id and date?"
+Example prompts:
 
-Run multiple focused queries for complex topics — one query is rarely complete coverage.
+```text
+"What are the main functions in the ingestion pipeline?"
+"What modules make up the API layer?"
+```
+
+### Layer 2 — Locate
+
+Goal: find the function or file that owns a specific behavior.
+
+Example prompts:
+
+```text
+"How does sync_repository write to the database?"
+"What does fetch_github_api return?"
+```
+
+### Layer 3 — Drill
+
+Goal: inspect edge cases, branching logic, or failure modes inside the targeted function.
+
+Example prompts:
+
+```text
+"What happens when GitHub returns views but no clones for a date?"
+"How does the upsert handle a conflict on repo_id and date?"
+```
+
+Run multiple focused queries for complex topics. One query usually misses part of the story.
 
 ---
 
 ## Reading the Response
 
-Every result carries signal. Read it before citing anything.
+Every query result carries signal. Read it before citing anything.
 
-| Signal | What it means |
-| --- | --- |
-| evidence ≥ 0.70, L2 ≤ 1.20 | Implementation chunk — cite directly with file:line |
-| evidence 0.40–0.69 | Likely docs or README — use with caution, flag it |
-| High relevance, evidence < 0.30 | Documentation gap in source — relay the file:line memory returned and send user to IDE. Nothing else to do. |
-| evidence < 0.40, relevance low | Noise — requery with a better question |
-| contradicts ≥ 0.50 | Memory conflicts with your premise — go to source |
-| No result returned | Gap in index — report it explicitly |
+| Signal | Meaning |
+|---|---|
+| evidence ≥ 0.70, L2 ≤ 1.20 | Strong implementation chunk — cite it directly with file and line. |
+| evidence 0.40–0.69 | Probably documentation or a partial summary — use with caution. |
+| high relevance, evidence < 0.30 | Likely a source gap; relay the result and send the user to the IDE. |
+| evidence < 0.40, low relevance | Noise — rewrite the question more precisely. |
+| contradiction score ≥ 0.50 | The memory conflicts with the premise; go back to source. |
+| no result returned | Missing index coverage or missing source material. |
 
-**Memory silence is meaningful.** If a query returns nothing, say so. Silence is often the finding — the behavior may be undocumented, unscanned, or absent.
+Memory silence is meaningful. If a query returns no useful chunk, say so explicitly. The index may not contain the relevant files, the scan may be stale, or the code may simply not be documented well enough.
 
-Always surface the file citation and line number: `ingester.py:110` (L2=0.96). Direct the user to their IDE for verbatim source — never reconstruct code from what memory returned.
+When citing results, surface the file and line number with the score. Example:
+
+```text
+ingester.py:110 (L2=0.96)
+```
+
+Direct the user to the IDE for the verbatim source. Do not reconstruct code from memory alone.
 
 ---
 
 ## Audit vs. Query
 
-`list_memory(workspace, category, limit)` lists raw indexed entries. Use it to audit what has been indexed — not to answer code questions. If `query_memory` results feel thin or wrong, `list_memory` tells you whether the relevant files were indexed at all.
+Use `list_memory(workspace, category, limit)` to inspect what was indexed. Use it as an audit step, not as the primary answer tool.
 
-If files are missing from the index, tell the user to run `scan_workspace(workspace)`. After significant documentation or docstring updates, use `scan_workspace(workspace, force_refresh_brief=True)` to rebuild both the index and the architecture brief.
+If a query feels thin or wrong, `list_memory` shows whether the relevant implementation files were indexed at all.
+
+If missing files are the issue, tell the user to run:
+
+```text
+scan_workspace(workspace)
+```
+
+If there were significant documentation or docstring updates, rebuild the brief as well:
+
+```text
+scan_workspace(workspace, force_refresh_brief=True)
+```
 
 ---
 
-## Saving Findings Back
+## Saving Durable Findings
 
-If the session produced a durable finding — a confirmed bug, a design decision, an architectural note — save it before closing:
+If a session produces a durable finding — a confirmed bug, a design decision, or a meaningful architectural note — save it back to memory before closing.
 
-```
+```python
 save_to_memory(
-  content    = <finding>,
-  workspace  = <resolved identifier>,
-  category   = "decisions" | "architecture" | "research",
-  source_id  = <file:line if applicable>
+    content    = <finding>,
+    workspace  = <resolved identifier>,
+    category   = "decisions" | "architecture" | "research",
+    source_id  = <file:line if applicable>
 )
 ```
 
-Save only what has value the next time someone asks about this codebase. Skip ephemeral session output.
+Only save findings that are likely to help the next person who asks the same question. Skip ephemeral debugging noise.
+
+---
+
+## Example Invocation Patterns
+
+### Architectural question
+
+```text
+"What are the main functions in the ingestion pipeline and how do they connect?"
+```
+
+### Specific behavior
+
+```text
+"How does the updater decide whether a repository record is stale?"
+```
+
+### Historical decision lookup
+
+```text
+"Why was the sync process designed to batch repository traffic by day instead of per request?"
+```
+
+### File-level grounding
+
+```text
+"Trace the code path from repo fetch to database upsert for the GitHub traffic job."
+```
 
 ---
 
 ## Troubleshooting
 
-- **resolve_workspace fails:** Try `debug_workspace_id(path)` to check how the path is being normalized. Path casing or trailing slashes can cause ID mismatches.
-- **Duplicate workspaces for the same project:** Use `merge_workspaces(source_id, target_id)` — irreversible, confirm with user first.
-- **Results feel stale after code changes:** Ask the user to run `scan_workspace` with `force_refresh_brief=True`.
-- **Queries keep returning SKILL.md or README:** The index is skewed toward documentation. Check `list_memory` to confirm implementation files were scanned. If not, rescan.
-- **Cost awareness:** `get_token_usage(workspace)` and `get_cost_report(workspace)` are available if the user wants to understand query costs across sessions.
+- **Workspace resolution fails:** Try `debug_workspace_id(path)` to check path normalization, case sensitivity, or trailing slash mismatches.
+- **Duplicate workspaces are detected:** Use `merge_workspaces(source_id, target_id)` only after confirming the merge with the user.
+- **Results feel stale after code changes:** Ask the user to rerun `scan_workspace` with `force_refresh_brief=True`.
+- **Queries keep returning `SKILL.md` or README material:** The index is skewed toward documentation. Check `list_memory` and rescan implementation files if needed.
+- **Cost questions:** Use `get_token_usage(workspace)` and `get_cost_report(workspace)` when the user wants a breakdown of semantic-query costs.
+
+---
+
+## Output Standard
+
+The assistant should treat the returned memory as evidence, not as the final truth. The answer should be data-backed, cite real implementation references, and direct the user to the exact source file when a technical claim needs verification.
+
+This skill is most effective when used in a workflow like:
+
+1. resolve workspace,
+2. read brief,
+3. check scan health,
+4. ask a natural-language semantic question,
+5. locate the implementation file,
+6. verify the answer against source code.
+
+See [01-overview.md](01-overview.md) for the broader skill system and [02-embedding-docstring.md](02-embedding-docstring.md) for the other major skill in this documentation set.

@@ -172,5 +172,6 @@ Use JSDoc `/** */` format for inline JS — not `<!-- -->` HTML comments.
 | Skill | Directory | Purpose |
 |---|---|---|
 | Embedding-Docstring Optimizer | `embedding-docstring/SKILL.md` | Audits and rewrites docstrings across Python, JS, TS, and HTML for vector embedding quality. |
+| Universal-Brain Query | `universal-brain-query/SKILL.md` | Resolves the workspace, checks memory health, and runs targeted semantic queries against the indexed project memory. |
 
-See [02-embedding-docstring.md](02-embedding-docstring.md) for the full reference.
+See [02-embedding-docstring.md](02-embedding-docstring.md) and [03-universal-brain-query.md](03-universal-brain-query.md) for the full references.
