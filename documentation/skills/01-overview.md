@@ -117,6 +117,7 @@ checklist for every function, method, class, and UPPER_CASE constant in your
 codebase:
 
 **Python functions and methods:**
+
 ```python
 def function_name(param: str) -> int:
     """Summary sentence. Names technology explicitly (e.g., PostgreSQL, Redis).
@@ -132,27 +133,32 @@ def function_name(param: str) -> int:
 ```
 
 **Python constants:**
+
 ```python
 # Summary. What the constant controls, its valid range or allowed values,
 # and any technology it configures (e.g., "controls PostgreSQL pool size; range 1–100").
 MAX_POOL_SIZE = 20
 ```
+
 Each constant needs its own comment block immediately above it. A shared block
 above a group of constants only reaches the first one — tree-sitter stops at the
 first assignment.
 
 **HTML boundary elements** (`<section>`, `<main>`, `<nav>`, `<header>`, `<footer>`,
 `<form>`, `<div id="...">`, `<div class="...">`):
+
 ```html
 <!-- Results container. Displays converted output returned by POST /convert.
      Updated by HTMX hx-swap targeting this div. Empty on initial page load.
      Shows error partial if conversion fails; shows formatted output otherwise. -->
 <div id="results">
 ```
+
 A comment under 4 lines for a complex section is too short. If the comment block
 does not exist, write one from scratch — this is not optional.
 
 **HTML inline JavaScript** (inside `<script>` blocks without `src`):
+
 ```html
 <script>
 /**
@@ -163,6 +169,7 @@ does not exist, write one from scratch — this is not optional.
 function handleDragOver(event) { ... }
 </script>
 ```
+
 Use JSDoc `/** */` format for inline JS — not `<!-- -->` HTML comments.
 
 ---
@@ -170,7 +177,7 @@ Use JSDoc `/** */` format for inline JS — not `<!-- -->` HTML comments.
 ## Available Skills
 
 | Skill | Directory | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | Embedding-Docstring Optimizer | `embedding-docstring/SKILL.md` | Audits and rewrites docstrings across Python, JS, TS, and HTML for vector embedding quality. |
 | Universal-Brain Query | `universal-brain-query/SKILL.md` | Resolves the workspace, checks memory health, and runs targeted semantic queries against the indexed project memory. |
 

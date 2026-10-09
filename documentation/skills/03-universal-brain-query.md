@@ -117,7 +117,7 @@ Run multiple focused queries for complex topics. One query usually misses part o
 Every query result carries signal. Read it before citing anything.
 
 | Signal | Meaning |
-|---|---|
+| --- | --- |
 | evidence ≥ 0.70, L2 ≤ 1.20 | Strong implementation chunk — cite it directly with file and line. |
 | evidence 0.40–0.69 | Probably documentation or a partial summary — use with caution. |
 | high relevance, evidence < 0.30 | Likely a source gap; relay the result and send the user to the IDE. |
