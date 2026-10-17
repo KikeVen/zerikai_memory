@@ -114,7 +114,7 @@ Click the image below to watch a step-by-step walkthrough of the installation an
 </details>
 
 ```bash
-git clone https://github.com/your-username/zerikai_memory.git
+git clone https://github.com/kikeven/zerikai_memory.git
 cd zeriakai_memory
 
 # Create and activate a virtual environment (Python 3.11+)
