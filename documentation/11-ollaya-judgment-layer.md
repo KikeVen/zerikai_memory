@@ -71,15 +71,27 @@ All other answers pass through unchanged.
 ### VRAM handoff
 
 `winnow:e4b` (6.2 GB) and the Ollama synthesis model `ornith:9b` (5.6 GB) together exceed
-8 GB and cannot both be resident. The pipeline manages this automatically:
+8 GB and cannot both be resident. The pipeline manages this automatically based on the
+synthesis backend (determined by `MEMORY_MODE` and query routing):
 
+#### Cloud mode (`MEMORY_MODE=cloud` or escalated queries)
+
+Synthesis uses DeepSeek API (no local Ollama needed):
 1. **Before judging:** `ollaya/warm.py` pins `winnow:e4b` with `keep_alive=-1` so it stays
-   loaded across queries without reloading.
-2. **After synthesis:** the Ollama synthesis call passes `keep_alive=0` so `ornith:9b` is
-   evicted immediately after answering, freeing the card for the next judgment round.
+   loaded across queries without reloading (~6.7 s reload time saved per query).
+2. **After synthesis:** winnow remains pinned (since synthesis doesn't use Ollama).
 
-Measured steady state with `keep_alive=-1 / 0`: **~1.0 s judging + ~3.3 s synthesis reload
-≈ 4.5 s per query**, with VRAM staying well under 7,900 MiB between queries.
+Benefit: Avoids winnow reload penalty while synthesis runs on cloud.
+
+#### Local / Hybrid modes (Ollama synthesis)
+
+Synthesis uses local Ollama `ornith:9b`:
+1. **Before judging:** `ollaya/warm.py` pins `winnow:e4b` with `keep_alive=-1`.
+2. **After synthesis:** release call passes `keep_alive=0` so winnow is evicted, freeing
+   the card for ornith synthesis without both models resident.
+
+Measured steady state with `keep_alive=-1 / 0` (local synthesis): **~1.0 s judging + ~3.3 s
+synthesis reload ≈ 4.5 s per query**, with VRAM staying well under 7,900 MiB between queries.
 
 ---
 
@@ -171,7 +183,6 @@ uses 2 passages; changing it before recalibrating will skew the threshold values
 | `OLLAYA_MODEL` | `winnow:e4b` | Model tag passed to every judgment request. |
 | `OLLAYA_API_KEY` | `local` | Passed as the API key; Ollaya does not enforce it but the SDK requires one. |
 | `OLLAYA_TIMEOUT_SECONDS` | `120` | Request timeout. 23-question batches at 5 passages take 2–3 s; 120 s is intentionally generous. On timeout, `OllayaUnavailable` is raised and the pipeline fails open. |
-| `OLLAYA_KEEP_ALIVE` | `-1` | Pins `winnow:e4b` in VRAM between queries (`-1` = forever). Set to `0` to release after every call (adds ~3 s reload per query). |
 | `OLLAYA_MAX_PASSAGES` | `2` | Judgment window cap. Raise only after recalibrating thresholds. |
 | `OLLAYA_RELEVANCE_MIN` | `0.30` | Minimum passage relevance to keep. Calibrated 2026-10-31. |
 | `OLLAYA_EVIDENCE_MIN` | `0.20` | Minimum passage evidence to keep. Calibrated 2026-10-31. |

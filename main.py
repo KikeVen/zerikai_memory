@@ -75,7 +75,6 @@ from config import (
     OLLAYA_CONTRA_MIN,
     OLLAYA_EVIDENCE_MIN,
     OLLAYA_INJECTION_MAX,
-    OLLAYA_KEEP_ALIVE,
     OLLAYA_MAX_PASSAGES,
     OLLAYA_MODEL,
     OLLAYA_RELEVANCE_MIN,
@@ -1853,6 +1852,7 @@ async def query_memory(
                         evidence_questions as ollaya_evidence_questions,
                     )
                     from ollaya.warm import pin as ollaya_pin
+                    from ollaya.warm import release
 
                     ollaya_candidates = jev_candidates[:OLLAYA_MAX_PASSAGES]
                     evidence_passages = []
@@ -1873,8 +1873,14 @@ async def query_memory(
                         )
 
                     if evidence_passages:
+                        # Compute synthesis route early to decide whether to release winnow after judgment.
+                        # If synthesis will use cloud (DeepSeek), actively pin winnow so KV cache state
+                        # persists across queries. If synthesis will use Ollama (local), skip pinning so
+                        # winnow can be released to free GPU for ornith:9b synthesis.
+                        synthesis_uses_cloud = _should_use_cloud(user_query, use_cloud)
+                        if synthesis_uses_cloud:
+                            await asyncio.to_thread(ollaya_pin, OLLAYA_MODEL, -1)
                         try:
-                            ollaya_pin(OLLAYA_MODEL, OLLAYA_KEEP_ALIVE)
                             passage_ids = [p["id"] for p in evidence_passages]
                             ollaya_state = {
                                 "query": user_query,
@@ -1918,6 +1924,11 @@ async def query_memory(
                                 user_query,
                                 exc,
                             )
+                        finally:
+                            # Ensure winnow:e4b is released even if judgment fails (timeout, error, etc.).
+                            # Only release if synthesis will be local; if cloud, let idle timer decide eviction.
+                            if not synthesis_uses_cloud:
+                                await asyncio.to_thread(release, OLLAYA_MODEL)
 
                 if evidence_decision is not None:
                     if ENABLE_LEXICAL_RERANK:

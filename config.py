@@ -408,8 +408,6 @@ OLLAYA_API_KEY = os.getenv("OLLAYA_API_KEY", "local")
 # OLLAYA_TIMEOUT_SECONDS; positive float; default 120, deliberately far above
 # JEV_TIMEOUT_SECONDS because winnow:e4b on CPU or a partial GPU offload is slow.
 OLLAYA_TIMEOUT_SECONDS = float(os.getenv("OLLAYA_TIMEOUT_SECONDS", "120"))
-# keep_alive=-1 pins the model; 0 releases after each call. See vram-handoff.md.
-OLLAYA_KEEP_ALIVE: int | str = int(os.getenv("OLLAYA_KEEP_ALIVE", "-1"))
 # Passage cap for Ollaya judging. 2 is the measurement budget, not the production one;
 # production keeps FETCH_CAP=5 (23 questions). Change only with calibration evidence.
 OLLAYA_MAX_PASSAGES = int(os.getenv("OLLAYA_MAX_PASSAGES", "2"))
