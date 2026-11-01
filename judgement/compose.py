@@ -117,7 +117,7 @@ def compose_evidence(
     answerability_min: float,
 ) -> dict:
     """Compose Stage B Jev evidence answers into per-passage keep/drop decisions.
-    Fails open when answers is None. Keeps when relevance>=rel_min, evidence>=
+    Fails open on None answers. Keeps when relevance>=rel_min, evidence>=
     evid_min and injection<inj_max. Ranks by 0.50*relevance+0.35*evidence-
     0.15*injection and flags contradicts>=contra_min. Sorts included
     by rank desc then ascending ChromaDB l2_distance. Status "partial" on

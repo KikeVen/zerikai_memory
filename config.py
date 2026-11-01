@@ -59,43 +59,65 @@ ENABLE_DEEPSEEK_PRO = os.getenv(
 # DEEPSEEK_REASONING_EFFORT_* value. Each call path has its own toggle AND its
 # own effort on purpose — briefs and query synthesis are separate pipelines.
 _VALID_THINKING = {"enabled", "disabled"}
+# Allowed reasoning-effort levels for DeepSeek thinking mode. Valid members are
+# "low", "high", and "max"; _read_effort rejects anything else and falls back to the
+# per-path default. Passed verbatim as `reasoning_effort` by deepseek_thinking_kwargs.
 _VALID_EFFORT = {"low", "high", "max"}
 
 
 def _read_thinking(env_name: str, default: str = "disabled") -> str:
-    """Read and validate a thinking-mode env var.
-
-    Returns 'enabled' or 'disabled'; falls back to `default` on unknown values.
-    Pure — reads os.environ only.
+    """Read and validate a thinking-mode env var against _VALID_THINKING.
+    Lower-cases and strips the raw value before membership testing, so "ENABLED"
+    is accepted. Returns 'enabled' or 'disabled'; falls back to `default` on any
+    unknown value. Pure — reads os.environ only, no side effects.
     """
     value = os.getenv(env_name, default).strip().lower()
     return value if value in _VALID_THINKING else default
 
 
 def _read_effort(env_name: str, default: str = "low") -> str:
-    """Read and validate a reasoning-effort env var.
-
-    Returns 'low', 'high', or 'max'; falls back to `default` on unknown values.
-    Pure — reads os.environ only.
+    """Read and validate a reasoning-effort env var against _VALID_EFFORT.
+    Lower-cases and strips the raw value before membership testing. Returns "low",
+    "high", or "max"; falls back to `default` on any unknown value. Pure — reads
+    os.environ only, no side effects.
     """
     value = os.getenv(env_name, default).strip().lower()
     return value if value in _VALID_EFFORT else default
 
 
-# Per-path DeepSeek thinking toggles (enabled | disabled) and matching reasoning
-# effort (low | high | max). Each call path is independently tunable so that
-# enabling one does not silently constrain the others.
+# DeepSeek thinking-mode toggle for project-brief synthesis. Valid values are
+# "enabled" and "disabled"; env DEEPSEEK_THINKING_BRIEF; default "disabled" because
+# brief synthesis is extractive and does not benefit from chain-of-thought.
 DEEPSEEK_THINKING_BRIEF = _read_thinking("DEEPSEEK_THINKING_BRIEF", "disabled")
+
+# DeepSeek thinking-mode toggle for scan-time file summarisation. Valid values are
+# "enabled" and "disabled"; env DEEPSEEK_THINKING_SCAN; default "disabled" — scanning
+# runs per file and chain-of-thought would multiply the token cost.
 DEEPSEEK_THINKING_SCAN = _read_thinking("DEEPSEEK_THINKING_SCAN", "disabled")
+
+# DeepSeek thinking-mode toggle for query_memory synthesis. Valid values are
+# "enabled" and "disabled"; env DEEPSEEK_THINKING_QUERY; default "disabled". Setting it
+# to "enabled" only takes effect when the call also routes to DeepSeek cloud.
 DEEPSEEK_THINKING_QUERY = _read_thinking("DEEPSEEK_THINKING_QUERY", "disabled")
+
+# Reasoning effort paired with DEEPSEEK_THINKING_BRIEF when thinking is enabled.
+# Valid values are "low", "high", "max" (see _VALID_EFFORT); env
+# DEEPSEEK_REASONING_EFFORT_BRIEF; default "low". Ignored while BRIEF is "disabled".
 DEEPSEEK_REASONING_EFFORT_BRIEF = _read_effort("DEEPSEEK_REASONING_EFFORT_BRIEF", "low")
+
+# Reasoning effort paired with DEEPSEEK_THINKING_SCAN when thinking is enabled.
+# Valid values are "low", "high", "max"; env DEEPSEEK_REASONING_EFFORT_SCAN;
+# default "low". Ignored while SCAN is "disabled".
 DEEPSEEK_REASONING_EFFORT_SCAN = _read_effort("DEEPSEEK_REASONING_EFFORT_SCAN", "low")
+
+# Reasoning effort paired with DEEPSEEK_THINKING_QUERY when thinking is enabled.
+# Valid values are "low", "high", "max"; env DEEPSEEK_REASONING_EFFORT_QUERY;
+# default "low". Ignored while QUERY is "disabled".
 DEEPSEEK_REASONING_EFFORT_QUERY = _read_effort("DEEPSEEK_REASONING_EFFORT_QUERY", "low")
 
 
 def deepseek_thinking_kwargs(mode: str, effort: str = "low") -> dict:
     """Return OpenAI-format thinking kwargs for a DeepSeek chat call.
-
     mode: one of DEEPSEEK_THINKING_BRIEF / _SCAN / _QUERY (an 'enabled'/'disabled'
     string). effort: the matching DEEPSEEK_REASONING_EFFORT_* value.
     disabled → {"extra_body": {"thinking": {"type": "disabled"}}};
@@ -107,7 +129,10 @@ def deepseek_thinking_kwargs(mode: str, effort: str = "low") -> dict:
     return {"reasoning_effort": effort}
 
 
-# Local Ollama model for summarisation (always free, always local)
+# Ollama model tag used for every local summarisation and synthesis call. Env
+# OLLAMA_MODEL; default "mistral:7b"; any tag present in the local Ollama store is
+# valid. Consumed by _query_ollama, _build_section, and scan chunk summarisation in
+# main.py. Free and fully local — no network egress.
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "mistral:7b")
 _host = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
 if _host == "0.0.0.0":
@@ -202,7 +227,7 @@ def is_deepseek_peak_hour(
         utc_hour:    Override UTC hour (0–23). Defaults to now().
         utc_weekday: Override UTC weekday (0=Mon … 6=Sun). Defaults to now().
     """
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     if utc_hour is None:
         utc_hour = now.hour
     if utc_weekday is None:
@@ -237,7 +262,11 @@ def get_deepseek_pricing(
 # router, checked only after CLOUD_ESCALATION_KEYWORDS misses.
 CLOUD_ESCALATION_WORD_COUNT = 40
 
-# Keywords that always trigger cloud synthesis regardless of length
+# Exact-match keywords that force DeepSeek cloud synthesis in _should_use_cloud,
+# regardless of query length. Matched as whole lower-cased tokens against
+# user_query.split(), not as substrings, so "designer" does not match "design".
+# Checked after the explicit use_cloud override and before
+# CLOUD_ESCALATION_WORD_COUNT. Edit this set to retune auto-routing.
 CLOUD_ESCALATION_KEYWORDS = {
     "refactor", "architect", "architecture", "design", "redesign",
     "migrate", "migration", "strategy", "tradeoff", "trade-off",
@@ -323,10 +352,15 @@ JEV_DOMAIN_MIN = float(os.getenv("JEV_DOMAIN_MIN", "0.40"))
 # Judge #1 gate: maximum specificity Score (range 0–2) allowed before the query
 # is rejected as too_vague. Higher values accept less specific queries; default 1.5.
 JEV_SPEC_MAX = float(os.getenv("JEV_SPEC_MAX", "1.5"))
-# Minimum answerability score (Noul). Used by Judge #1 as answerable_from_code and
-# by Judge #2 as whole-set answerability; below it the result is marked partial or
-# no_answer. Range 0.0–1.0; default 0.50.
+# Minimum answerability score (Noul). Used by Judge #1 (assess_query) only.
+# Range 0.0–1.0; default 0.50.
 JEV_ANSWERABILITY_MIN = float(os.getenv("JEV_ANSWERABILITY_MIN", "0.50"))
+# Minimum whole-set answerability for Judge #2 (compose_evidence). Separate from
+# JEV_ANSWERABILITY_MIN so Judge #1 can be removed without touching the evidence path.
+# Falls back to JEV_ANSWERABILITY_MIN env value for backward compatibility.
+JEV_EVIDENCE_ANSWERABILITY_MIN = float(
+    os.getenv("JEV_EVIDENCE_ANSWERABILITY_MIN", os.getenv("JEV_ANSWERABILITY_MIN", "0.50"))
+)
 # Judge #2 gate: minimum relevance Noul score for a passage to be kept.
 # Range 0.0–1.0; default 0.50.
 JEV_RELEVANCE_MIN = float(os.getenv("JEV_RELEVANCE_MIN", "0.50"))
@@ -349,3 +383,65 @@ JEV_ALLOW_IN_LOCAL = os.getenv("JEV_ALLOW_IN_LOCAL", "false").lower() == "true"
 # fall through to the existing non-Jev pipeline; when false they propagate.
 # Valid values: true/false (case-insensitive); default true.
 JEV_FAIL_OPEN = os.getenv("JEV_FAIL_OPEN", "true").lower() == "true"
+
+# ---------------------------------------------------------------------------
+# Ollaya — local decision backend (winnow:e4b via Ollaya server on :11435)
+# Mutually exclusive with ENABLE_JEV; process refuses to start if both are true.
+# ---------------------------------------------------------------------------
+ENABLE_OLLAYA = os.getenv("ENABLE_OLLAYA", "false").lower() == "true"
+# Ollaya server base URL. Env OLLAYA_BASE_URL; default http://127.0.0.1:11435, the
+# dedicated Ollaya port (distinct from Ollama's 11434). The warm-up helpers append
+# /api/decide to it.
+OLLAYA_BASE_URL = os.getenv("OLLAYA_BASE_URL", "http://127.0.0.1:11435")
+
+# Ollaya decision model identifier. Env OLLAYA_MODEL; default "winnow:e4b", a local
+# TypeSafe System One model. Sent as the `model` argument on every judge request; the
+# warm-up helpers name it explicitly too.
+OLLAYA_MODEL = os.getenv("OLLAYA_MODEL", "winnow:e4b")
+
+# API key presented to the local Ollaya server. Env OLLAYA_API_KEY; default "local"
+# because a loopback Ollaya deployment does not authenticate. Set only if the server
+# starts enforcing auth.
+OLLAYA_API_KEY = os.getenv("OLLAYA_API_KEY", "local")
+
+# Timeout in seconds for Ollaya judge requests and warm-up POSTs. Env
+# OLLAYA_TIMEOUT_SECONDS; positive float; default 120, deliberately far above
+# JEV_TIMEOUT_SECONDS because winnow:e4b on CPU or a partial GPU offload is slow.
+OLLAYA_TIMEOUT_SECONDS = float(os.getenv("OLLAYA_TIMEOUT_SECONDS", "120"))
+# keep_alive=-1 pins the model; 0 releases after each call. See vram-handoff.md.
+OLLAYA_KEEP_ALIVE: int | str = int(os.getenv("OLLAYA_KEEP_ALIVE", "-1"))
+# Passage cap for Ollaya judging. 2 is the measurement budget, not the production one;
+# production keeps FETCH_CAP=5 (23 questions). Change only with calibration evidence.
+OLLAYA_MAX_PASSAGES = int(os.getenv("OLLAYA_MAX_PASSAGES", "2"))
+
+# Minimum relevance Noul score for Ollaya Judge #2 to keep a passage. Range 0.0-1.0;
+# env OLLAYA_RELEVANCE_MIN; falls back to JEV_RELEVANCE_MIN, default 0.50. Not
+# calibrated — run threshold-calibration.md before treating it as tuned.
+OLLAYA_RELEVANCE_MIN = float(
+    os.getenv("OLLAYA_RELEVANCE_MIN", os.getenv("JEV_RELEVANCE_MIN", "0.50"))
+)
+
+# Minimum evidence Noul score for Ollaya Judge #2 to keep a passage. Range 0.0-1.0;
+# env OLLAYA_EVIDENCE_MIN; falls back to JEV_EVIDENCE_MIN, default 0.50. Not calibrated.
+OLLAYA_EVIDENCE_MIN = float(
+    os.getenv("OLLAYA_EVIDENCE_MIN", os.getenv("JEV_EVIDENCE_MIN", "0.50"))
+)
+
+# Maximum injection score for Ollaya Judge #2; a passage at or above it is dropped.
+# Range 0.0-1.0; env OLLAYA_INJECTION_MAX; falls back to JEV_INJECTION_MAX, default 0.50.
+OLLAYA_INJECTION_MAX = float(
+    os.getenv("OLLAYA_INJECTION_MAX", os.getenv("JEV_INJECTION_MAX", "0.50"))
+)
+
+# Minimum contradicts score at which Ollaya flags a passage as conflicting evidence.
+# Range 0.0-1.0; env OLLAYA_CONTRA_MIN; falls back to JEV_CONTRA_MIN, default 0.50.
+OLLAYA_CONTRA_MIN = float(
+    os.getenv("OLLAYA_CONTRA_MIN", os.getenv("JEV_CONTRA_MIN", "0.50"))
+)
+
+# Minimum whole-set answerability score for Ollaya Judge #2 before status downgrades to
+# "partial". Range 0.0-1.0; env OLLAYA_ANSWERABILITY_MIN; falls back to
+# JEV_ANSWERABILITY_MIN, default 0.50.
+OLLAYA_ANSWERABILITY_MIN = float(
+    os.getenv("OLLAYA_ANSWERABILITY_MIN", os.getenv("JEV_ANSWERABILITY_MIN", "0.50"))
+)

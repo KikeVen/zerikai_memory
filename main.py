@@ -1,3 +1,14 @@
+"""Zerikai Memory — FastMCP server exposing ChromaDB-backed codebase memory.
+Registers the MCP tools init_workspace, save_to_memory, query_memory, list_memory,
+list_workspaces, resolve_workspace, update_brief, get_brief, scan_workspace,
+scan_status, get_token_usage, get_cache_stats, get_cost_report, purge_usage_data,
+debug_workspace_id, and merge_workspaces. Persists vectors in ChromaDB under
+.brain/vector_db, briefs in .brain/contexts, and token/cost rows in .brain/zerikai.db
+via sqlite3; synthesis runs on DeepSeek cloud or local Ollama, routed per call by
+_should_use_cloud, with optional Jev/Ollaya judging. Import side effect: configures
+logging to .brain/server.log and initialises the SQLite schema.
+"""
+
 import asyncio
 import fnmatch
 import hashlib
@@ -9,7 +20,7 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from uuid import uuid4
@@ -37,33 +48,44 @@ from config import (
     DEEPSEEK_THINKING_QUERY,
     DEEPSEEK_THINKING_SCAN,
     DEFAULT_MEMORY_MODE,
-    ENABLE_JEV,
     ENABLE_DEEPSEEK_PRO,
+    ENABLE_JEV,
     ENABLE_LEXICAL_RERANK,
+    ENABLE_OLLAYA,
     ENABLE_TOKEN_TRACKING,
     FETCH_CAP,
     JEV_ALLOW_IN_LOCAL,
     JEV_ANSWERABILITY_MIN,
-    JEV_DISTANCE_THRESHOLD,
-    JEV_ENABLE_QUERY_JUDGE,
-    JEV_MAX_PASSAGES,
     JEV_CONTRA_MIN,
-    JEV_EVIDENCE_MIN,
-    JEV_RELEVANCE_MIN,
-    JEV_INJECTION_MAX,
+    JEV_DISTANCE_THRESHOLD,
     JEV_DOMAIN_MIN,
+    JEV_ENABLE_QUERY_JUDGE,
+    JEV_EVIDENCE_ANSWERABILITY_MIN,
+    JEV_EVIDENCE_MIN,
+    JEV_INJECTION_MAX,
+    JEV_MAX_PASSAGES,
+    JEV_RELEVANCE_MIN,
     JEV_SPEC_MAX,
     LEXICAL_RERANK_WEIGHT,
     MEMORY_MODE,
     OLLAMA_HOST,
     OLLAMA_MAX_CONCURRENCY,
     OLLAMA_MODEL,
+    OLLAYA_ANSWERABILITY_MIN,
+    OLLAYA_CONTRA_MIN,
+    OLLAYA_EVIDENCE_MIN,
+    OLLAYA_INJECTION_MAX,
+    OLLAYA_KEEP_ALIVE,
+    OLLAYA_MAX_PASSAGES,
+    OLLAYA_MODEL,
+    OLLAYA_RELEVANCE_MIN,
     QUERY_DISTANCE_THRESHOLD,
     SKIP_BARE_FILES,
     SYNTHESIZE_WITH_CLOUD,
+    TYPESAFE_MODEL,
     ZERIKAI_DB,
-    get_deepseek_pricing,
     deepseek_thinking_kwargs,
+    get_deepseek_pricing,
     is_deepseek_peak_hour,
 )
 
@@ -107,13 +129,14 @@ log.info("=" * 60)
 # Atomic file write helper
 # ---------------------------------------------------------------------------
 def _atomic_write_text(path: Path, content: str, retries: int = 3) -> None:
-    """Write text to a file atomically: temp file in same dir, then os.replace().
-    Guarantees the target is always old-or-new, never truncated — a crash
-    mid-write leaves the previous content intact. Atomic on Windows, macOS,
-    and Linux because the temp file lives in path.parent (same filesystem).
-    Retries on Windows sharing violations (destination open by another
-    process, e.g. an editor tab) with a brief backoff before giving up.
-    Side effect: writes to filesystem; cleans up the temp file on failure.
+    """Write text to a file atomically via tempfile.mkstemp in path.parent then os.replace().
+    Guarantees the target is always old-or-new, never truncated: a crash mid-write leaves
+    the previous content intact on Windows, macOS, and Linux (temp file is same filesystem).
+    Side effect: writes the filesystem and removes the temp file on failure.
+    Args:
+        path: Destination file; its parent must exist and be writable.
+        content: UTF-8 text to write atomically.
+        retries: Attempts before giving up on Windows sharing violations (default 3).
     """
     for attempt in range(retries):
         fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
@@ -138,6 +161,12 @@ def _atomic_write_text(path: Path, content: str, retries: int = 3) -> None:
 # MCP Server
 # ---------------------------------------------------------------------------
 mcp = MCPServer("UniversalBrain")
+
+if ENABLE_JEV and ENABLE_OLLAYA:
+    raise SystemExit(
+        "Configuration error: ENABLE_JEV and ENABLE_OLLAYA are both true. "
+        "They are mutually exclusive — enable at most one."
+    )
 
 # ---------------------------------------------------------------------------
 # ChromaDB — single client, collections are per-workspace (created on demand)
@@ -315,7 +344,7 @@ def _track_token_usage(
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
-                    datetime.now(timezone.utc).isoformat(),
+                    datetime.now(UTC).isoformat(),
                     workspace_id,
                     operation,
                     model,
@@ -418,7 +447,7 @@ def _derive_workspace_id(workspace_path: str) -> tuple[str, str]:
 
         # No existing workspace - create new UUID and register it
         workspace_uuid = str(uuid4())
-        created_at = datetime.now(timezone.utc).isoformat()
+        created_at = datetime.now(UTC).isoformat()
 
         cursor.execute(
             """
@@ -865,13 +894,11 @@ async def _synthesize_deep_brief(
     ]
 
     async def _build_section_safe(s: dict):
-        """Gate Ollama synthesis calls via the shared ollama_semaphore.
-        Inner helper for _synthesize_deep_brief, run via asyncio.gather. When
-        the enclosing use_cloud flag is False (local Ollama) it acquires
-        ollama_semaphore before delegating to _build_section, capping local
-        concurrency to avoid VRAM thrashing; when True (DeepSeek cloud) it
-        delegates directly. Forwards _build_section's (heading, content) tuple,
-        including its error path. No side effects beyond the delegated call.
+        """Inner helper for _synthesize_deep_brief, run via asyncio.gather.
+        When use_cloud is False it acquires ollama_semaphore before delegating to _build_section,
+        capping Ollama concurrency to avoid VRAM thrashing; when True (DeepSeek cloud) it
+        delegates directly. Forwards _build_section's (heading, content) tuple, error path
+        included. No side effects beyond the delegated call.
         """
         if not use_cloud:
             async with ollama_semaphore:
@@ -916,7 +943,7 @@ class ScanProgress:
     skipped: int = 0
     errors: int = 0
     started_at: float = field(
-        default_factory=lambda: datetime.now(timezone.utc).timestamp()
+        default_factory=lambda: datetime.now(UTC).timestamp()
     )
     completed: bool = False
     brief_status: str = "pending"  # pending, running, complete, failed
@@ -1526,11 +1553,10 @@ async def query_memory(
     use_cloud: bool | None = None,
 ) -> str:
     """FastMCP @mcp.tool() tool: query ChromaDB memory with LLM synthesis.
-    Fetches FETCH_CAP candidates, filters by L2 distance threshold,
-    re-ranks via ENABLE_LEXICAL_RERANK, trims to top 5, synthesizes
-    via DeepSeek or Ollama (auto-routed by _should_use_cloud). Returns
-    plain answer plus 'Sources:' file:line citations. Side effect: writes
-    token usage to zerikai.db sqlite3 via _track_token_usage. Read-only.
+    Fetches FETCH_CAP candidates, filters by L2 distance, re-ranks via ENABLE_LEXICAL_RERANK,
+    trims to top 5, then synthesizes via DeepSeek or Ollama (auto-routed by _should_use_cloud).
+    Returns the answer plus 'Sources:' file:line citations. Side effect: appends a
+    token_usage row via _track_token_usage; ChromaDB is only read.
     Args:
         user_query: The question or topic to look up.
         workspace:  Workspace identifier (UUID, short UUID, or display name).
@@ -1651,8 +1677,8 @@ async def query_memory(
                         user_query,
                     )
                 else:
-                    from jev.compose import compose_query
-                    from jev.report import render_no_answer
+                    from judgement.compose import compose_query
+                    from judgement.report import render_no_answer
 
                     query_decision = compose_query(
                         query_assessment,
@@ -1715,7 +1741,7 @@ async def query_memory(
                 if dist <= JEV_DISTANCE_THRESHOLD
             ]
 
-            if not relevant and not (jev_active and jev_candidates):
+            if not relevant and not (jev_active and jev_candidates) and not (ENABLE_OLLAYA and jev_candidates):
                 best = min(distances)
                 log.info(
                     "query_memory | no results below threshold (best dist=%.3f) workspace=%s query=%r",
@@ -1738,6 +1764,23 @@ async def query_memory(
                     jev_candidates[:JEV_MAX_PASSAGES]
                     if jev_active
                     else []
+                )
+                # Record which judge answers this query. Without this the backend
+                # can only be inferred from another backend's debug output.
+                judge_backend = (
+                    "jev" if jev_active else ("ollaya" if ENABLE_OLLAYA else "lexical")
+                )
+                judge_model = (
+                    OLLAYA_MODEL
+                    if judge_backend == "ollaya"
+                    else TYPESAFE_MODEL if judge_backend == "jev" else None
+                )
+                log.info(
+                    "query_memory | judge=%s model=%s rerank=%s workspace=%s",
+                    judge_backend,
+                    judge_model or "-",
+                    ENABLE_LEXICAL_RERANK,
+                    workspace_id,
                 )
                 if jev_active:
                     from jev.assess import (
@@ -1778,8 +1821,8 @@ async def query_memory(
                                 user_query,
                             )
                         else:
-                            from jev.compose import compose_evidence
-                            from jev.report import render_no_answer
+                            from judgement.compose import compose_evidence
+                            from judgement.report import render_no_answer
 
                             evidence_decision = compose_evidence(
                                 evidence_assessment,
@@ -1788,7 +1831,7 @@ async def query_memory(
                                 evid_min=JEV_EVIDENCE_MIN,
                                 inj_max=JEV_INJECTION_MAX,
                                 contra_min=JEV_CONTRA_MIN,
-                                answerability_min=JEV_ANSWERABILITY_MIN,
+                                answerability_min=JEV_EVIDENCE_ANSWERABILITY_MIN,
                             )
                             if evidence_decision.get("no_answer"):
                                 return render_no_answer()
@@ -1800,9 +1843,85 @@ async def query_memory(
                             exc,
                         )
 
+                elif ENABLE_OLLAYA:
+                    from judgement.compose import compose_evidence
+                    from judgement.report import render_no_answer
+                    from ollaya.client import OllayaUnavailable
+                    from ollaya.client import call as ollaya_call
+                    from ollaya.normalize import to_compose
+                    from ollaya.questions import (
+                        evidence_questions as ollaya_evidence_questions,
+                    )
+                    from ollaya.warm import pin as ollaya_pin
+
+                    ollaya_candidates = jev_candidates[:OLLAYA_MAX_PASSAGES]
+                    evidence_passages = []
+                    for index, (doc, meta, dist) in enumerate(ollaya_candidates):
+                        meta = meta or {}
+                        source_file = meta.get("source_file", "")
+                        lineno = meta.get("lineno", "")
+                        name = meta.get("name", "")
+                        evidence_passages.append(
+                            {
+                                "id": f"{index}:{source_file}:{lineno}:{name}",
+                                "source_file": source_file,
+                                "lineno": lineno,
+                                "name": name,
+                                "text": doc,
+                                "l2_distance": dist,
+                            }
+                        )
+
+                    if evidence_passages:
+                        try:
+                            ollaya_pin(OLLAYA_MODEL, OLLAYA_KEEP_ALIVE)
+                            passage_ids = [p["id"] for p in evidence_passages]
+                            ollaya_state = {
+                                "query": user_query,
+                                "passages": [
+                                    {
+                                        "id": p["id"],
+                                        "source_file": p["source_file"],
+                                        "lineno": p["lineno"],
+                                        "name": p["name"],
+                                        "text": p["text"],
+                                    }
+                                    for p in evidence_passages
+                                ],
+                            }
+                            ollaya_response = await asyncio.to_thread(
+                                ollaya_call, ollaya_state, ollaya_evidence_questions(passage_ids)
+                            )
+                            normalized = to_compose(ollaya_response["answers"])
+                            evidence_decision = compose_evidence(
+                                normalized,
+                                evidence_passages,
+                                rel_min=OLLAYA_RELEVANCE_MIN,
+                                evid_min=OLLAYA_EVIDENCE_MIN,
+                                inj_max=OLLAYA_INJECTION_MAX,
+                                contra_min=OLLAYA_CONTRA_MIN,
+                                answerability_min=OLLAYA_ANSWERABILITY_MIN,
+                            )
+                            if evidence_decision.get("no_answer"):
+                                return render_no_answer()
+                        except OllayaUnavailable as exc:
+                            log.warning(
+                                "query_memory | Ollaya unavailable; proceeding fail-open workspace=%s query=%r error=%s",
+                                workspace_id,
+                                user_query,
+                                exc,
+                            )
+                        except Exception as exc:
+                            log.warning(
+                                "query_memory | Ollaya handling failed; proceeding fail-open workspace=%s query=%r error=%s",
+                                workspace_id,
+                                user_query,
+                                exc,
+                            )
+
                 if evidence_decision is not None:
                     if ENABLE_LEXICAL_RERANK:
-                        log.info("query_memory | lexical rerank superseded by Jev")
+                        log.info("query_memory | lexical rerank superseded by judge")
                     relevant_for_evidence = [
                         (
                             passage.get("text", ""),
@@ -1939,7 +2058,7 @@ async def query_memory(
 
         # Final return — plain string again, no JSON
         if evidence_decision is not None:
-            from jev.report import render_report
+            from judgement.report import render_report
 
             report = render_report(
                 {
@@ -2049,6 +2168,8 @@ async def _query_ollama(context: str, user_query: str, workspace_id: str) -> str
         ol_client.generate,
         model=OLLAMA_MODEL,
         prompt=prompt,
+        # Release VRAM after synthesis so Ollaya can take the card on the next query.
+        keep_alive=0 if ENABLE_OLLAYA else None,
     )
     return result["response"].strip()
 
@@ -2318,14 +2439,11 @@ async def _background_scan(
     progress: ScanProgress,
     force_refresh_brief: bool,
 ) -> None:
-    """Run the full 5-phase scan loop in background with asyncio concurrency.
-    Phase 1: Collect eligible files (respects .memignore, _TEXT_EXTENSIONS,
-    _MAX_FILE_BYTES). Phase 2: Concurrent processing via Semaphore(4) for
-    tree-sitter parsing + Semaphore(2) for LLM summarization. Phase 3:
-    Aggregate results and batch-upsert to ChromaDB via collection.upsert.
-    Phase 4: Purge stale memories (old_ids - scanned_ids). Phase 5:
-    Fire-and-forget brief synthesis via _background_brief_synthesis.
-    Errors are logged, not propagated. Updates ScanProgress in _scans.
+    """Run the full 5-phase scan loop in the background.
+    Phase 1 collects files (.memignore, _TEXT_EXTENSIONS, _MAX_FILE_BYTES); phase 2 parses
+    with Semaphore(4) and summarizes with Semaphore(2); phase 3 batch-upserts to ChromaDB;
+    phase 4 purges stale ids (old_ids - scanned_ids); phase 5 fires brief synthesis via
+    _background_brief_synthesis. Errors are logged, never propagated; updates ScanProgress.
     """
     try:
         # ── Phase 1: Collect eligible files ──────────────────────────
@@ -2374,7 +2492,7 @@ async def _background_scan(
             Side effect: calls save_to_memory for chunked files, populates scanned_ids."""
             rel_path = fp.relative_to(workspace_root).as_posix()
             last_modified_ts = datetime.fromtimestamp(
-                fp.stat().st_mtime, timezone.utc
+                fp.stat().st_mtime, UTC
             ).isoformat()
             ext = fp.suffix.lower()
 
@@ -2881,7 +2999,7 @@ async def get_cost_report(
         conn.row_factory = sqlite3.Row
 
         # Calculate date range based on period
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         start_date = None
 
         if period == "today":
@@ -2974,7 +3092,7 @@ async def get_cost_report(
         )
 
         # Build pricing-tier banner (live, no DB touch)
-        utc_now = datetime.now(timezone.utc)
+        utc_now = datetime.now(UTC)
         tier_label = "PEAK" if is_deepseek_peak_hour(utc_now.hour) else "OFF-PEAK"
         flash = get_deepseek_pricing("v4-flash", utc_now.hour)
         pro = get_deepseek_pricing("v4-pro", utc_now.hour)
@@ -3173,7 +3291,7 @@ async def scan_status(workspace: str) -> str:
                 f'To start one, ask your agent: scan_workspace(workspace="{display_name}")'
             )
 
-        elapsed = datetime.now(timezone.utc).timestamp() - progress.started_at
+        elapsed = datetime.now(UTC).timestamp() - progress.started_at
 
         if progress.completed:
             parts = [

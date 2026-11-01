@@ -53,6 +53,21 @@ zerikai_memory now integrates **Jev**, TypeSafe AI's *System One* model — a fa
 
 ---
 
+## 🆕 New — Ollaya Local Judgment Layer
+
+zerikai_memory now supports **Ollaya running `winnow:e4b`** as a fully local, zero-cost alternative to the Jev judgment layer. Same evidence scoring, same report format — no API key, no cloud calls, runs entirely on your GPU.
+
+- **What it is:** a local judgment server that runs `winnow:e4b` on `127.0.0.1:11435`, accepting the same TypeSafe question types as Jev and returning calibrated probabilities — no network required.
+- **What it does:** identical per-passage relevance / evidence / contradiction / prompt-injection scoring and the same `Assessment / Evidence / Guidance` report, using a reframed question set tuned for local inference.
+- **Off by default and mutually exclusive with Jev:** `ENABLE_OLLAYA=false` is byte-identical to before. Enabling both `ENABLE_JEV` and `ENABLE_OLLAYA` is a startup error.
+- **Fail-open:** if the Ollaya server is down, the query falls back to lexical re-ranking automatically.
+- **Activate it:** start `ollaya serve`, pull `winnow:e4b`, then set `ENABLE_OLLAYA=true` in `.env` and restart the server.
+
+📖 **Full details — VRAM management, calibration, and every parameter:
+[documentation/11-ollaya-judgment-layer.md](documentation/11-ollaya-judgment-layer.md)**
+
+---
+
 ## The Problem
 
 Every new chat session starts completely cold. When you switch contexts or open a new window:
