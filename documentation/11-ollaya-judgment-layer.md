@@ -77,6 +77,7 @@ synthesis backend (determined by `MEMORY_MODE` and query routing):
 #### Cloud mode (`MEMORY_MODE=cloud` or escalated queries)
 
 Synthesis uses DeepSeek API (no local Ollama needed):
+
 1. **Before judging:** `ollaya/warm.py` pins `winnow:e4b` with `keep_alive=-1` so it stays
    loaded across queries without reloading (~6.7 s reload time saved per query).
 2. **After synthesis:** winnow remains pinned (since synthesis doesn't use Ollama).
@@ -86,6 +87,7 @@ Benefit: Avoids winnow reload penalty while synthesis runs on cloud.
 #### Local / Hybrid modes (Ollama synthesis)
 
 Synthesis uses local Ollama `ornith:9b`:
+
 1. **Before judging:** `ollaya/warm.py` pins `winnow:e4b` with `keep_alive=-1`.
 2. **After synthesis:** release call passes `keep_alive=0` so winnow is evicted, freeing
    the card for ornith synthesis without both models resident.
@@ -97,7 +99,7 @@ synthesis reload ≈ 4.5 s per query**, with VRAM staying well under 7,900 MiB b
 
 ## 3. How to activate it
 
-**Prerequisites:**
+**Manual setup (one-time prerequisites):**
 
 - Ollaya installed: download from **<https://ollaya.dev>**
 - Model pulled: `ollaya pull winnow:e4b` (model page: <https://ollaya.dev/library/winnow>)
@@ -109,6 +111,123 @@ synthesis reload ≈ 4.5 s per query**, with VRAM staying well under 7,900 MiB b
 curl http://127.0.0.1:11435/           # → "Ollaya is running"
 curl http://127.0.0.1:11435/api/ps     # → model list (winnow:e4b when warm)
 ```
+
+### Auto-start the server
+
+Since zerikai_memory queries the Ollaya server at startup, you need `ollaya serve` running *before* your MCP server starts. Choose the method for your platform:
+
+#### Linux
+
+The `install.sh` script sets up a **systemd service** automatically (if run with `sudo`):
+
+```bash
+# Already configured after installation
+systemctl enable ollaya      # Start at boot
+systemctl start ollaya       # Start now
+systemctl status ollaya      # Verify it's running
+```
+
+If you need to set it up manually:
+
+```bash
+sudo tee /etc/systemd/system/ollaya.service > /dev/null <<EOF
+[Unit]
+Description=Ollaya Decision Model Server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ollaya serve
+Environment="OLLAYA_HOST=127.0.0.1:11435"
+Restart=on-failure
+User=ollaya
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable ollaya
+sudo systemctl start ollaya
+```
+
+#### macOS
+
+**Option 1: Using the Ollaya desktop app (easiest)**
+
+1. Open the Ollaya app
+2. Click the menu bar icon → **"Open at Login"** toggle
+
+This writes a LaunchAgent plist that starts the server at each login.
+
+**Option 2: Manual LaunchAgent setup**
+
+Create a plist file at `~/Library/LaunchAgents/dev.ollaya.app.plist`:
+
+```bash
+mkdir -p ~/Library/LaunchAgents
+
+cat > ~/Library/LaunchAgents/dev.ollaya.app.plist <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.ollaya.app</string>
+  <key>ProgramArguments</key><array><string>/usr/local/bin/ollaya</string><string>serve</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>ProcessType</key><string>Interactive</string>
+</dict>
+</plist>
+EOF
+
+# Load it
+launchctl load ~/Library/LaunchAgents/dev.ollaya.app.plist
+launchctl start dev.ollaya.app
+```
+
+Verify it started:
+
+```bash
+launchctl list | grep dev.ollaya
+```
+
+#### Windows
+
+Use **Task Scheduler** to run `ollaya serve` at logon. Run this once in an **admin PowerShell**:
+
+```powershell
+$action  = New-ScheduledTaskAction -Execute "ollaya" -Argument "serve"
+$trigger = New-ScheduledTaskTrigger -AtLogOn
+$settings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+Register-ScheduledTask -TaskName "Ollaya" -Action $action -Trigger $trigger -Settings $settings -RunLevel Limited
+```
+
+**Notes:**
+
+- `ollaya` must be on your `PATH`, or replace with the full path: `"$env:LOCALAPPDATA\Ollaya\ollaya.exe"`
+- `RunLevel Limited` runs it as your user (not system) — correct for the loopback server
+- `Hidden` keeps the task invisible; combined with Ollaya's `CREATE_NO_WINDOW` flag, you'll see no console window at login
+- Verify after reboot: `curl http://127.0.0.1:11435/`
+
+**Troubleshooting:** If the server doesn't start after reboot, check the Task Scheduler event log or the Ollaya log:
+
+```powershell
+Get-ScheduledTask -TaskName "Ollaya" | Get-ScheduledTaskInfo
+Get-Content "$HOME\.ollaya\logs\server.log"
+```
+
+### Integration with zerikai_memory
+
+Once the server is running, the default `.env` values work seamlessly:
+
+```
+OLLAYA_BASE_URL=http://127.0.0.1:11435
+OLLAYA_API_KEY=local
+```
+
+The server trusts local callers by default at `127.0.0.1:11435`. If you set a custom `OLLAYA_API_KEY` in your `.env`, ensure the same key is set in the environment where the Ollaya server runs (or use the startup scripts above to inject it).
 
 **In your `.env`, set:**
 
@@ -164,7 +283,7 @@ OLLAYA_ANSWERABILITY_MIN=0.40
 ```
 
 **Re-calibrate** before deploying on a different workspace or after switching models. See
-`__ignore/pipeline/threshold-calibration.md` for the procedure.
+[documentation/12-ollaya-threshold-calibration.md](12-ollaya-threshold-calibration.md) for the procedure.
 
 **One honest limitation:** `OLLAYA_MAX_PASSAGES=2` caps the judgment window at 2 passages.
 With `FETCH_CAP=5` the pipeline retrieves 5 candidates but only the top 2 (by L2 distance)
@@ -221,7 +340,64 @@ has taken GPU memory — check with `nvidia-smi`.
 
 ---
 
-## 8. References
+## 8. Hardware Limitations & Failover Behavior
+
+### Context Overflow on Long-Form Prose
+
+`winnow:e4b` is optimized for **code judgment** — it was trained on short code snippets (typically 200–500 tokens). On **8 GB VRAM**, the model leaves minimal headroom for state (query + passages combined).
+
+When passages are **long-form prose** (markdown documents, legal text, essays, etc. — 1000+ tokens each), the combined state can exceed winnow's context window (~2048 tokens). When this happens:
+
+1. **Ollaya returns HTTP 422** (`part of state was dropped to fit the context`)
+2. **zerikai_memory logs a warning** and catches the `OllayaUnavailable` exception
+3. **Automatic failover:** The pipeline skips winnow judgment and falls back to **lexical re-ranking** (keyword overlap + L2 distance)
+4. **Answer still comes back** — the fail-open guarantee holds
+
+**Example from logs:**
+
+```
+21:43:22 — winnow drops state to fit context
+21:43:22 — OllayaUnavailable; proceeding fail-open
+21:43:22 — lexical re-rank applied
+```
+
+### When Context Overflow Occurs
+
+- **Code-heavy workspaces**: ✅ Works fine at `OLLAYA_MAX_PASSAGES=5`
+- **Markdown-heavy workspaces** (legal docs, long-form prose): ⚠️ Context overflow at even `OLLAYA_MAX_PASSAGES=2`
+
+### Workaround (Current 8 GB Hardware)
+
+Reduce `OLLAYA_MAX_PASSAGES` to 1 and accept lexical re-ranking for markdown queries. The answer quality degrades gracefully — you lose structured judgment but keep keyword-based passage filtering.
+
+Alternatively, disable Ollaya for markdown-heavy workspaces:
+
+```
+ENABLE_OLLAYA=false
+```
+
+This reverts to Jev (cloud) or pure lexical re-ranking, depending on your `MEMORY_MODE`.
+
+### Recommended Fix: Upgrade GPU & Use winnow:12b
+
+The permanent solution for supporting both code and prose workspaces:
+
+1. **Upgrade GPU to 16+ GB VRAM** (RTX 4070 Super, RTX 4080, A100, H100, etc.)
+2. **Pull `winnow:12b`**: `ollaya pull winnow:12b` (larger model, trained for broader judgment tasks)
+3. **Update `.env`**: `OLLAYA_MODEL=winnow:12b`
+4. **Re-calibrate thresholds** (see [documentation/12-ollaya-threshold-calibration.md](12-ollaya-threshold-calibration.md))
+5. **Result:** winnow handles both code and markdown without context overflow
+
+**Estimated latency (winnow:12b on 24GB GPU):**
+
+- Markdown passages: ~2–3s per query (vs. current 0–0.5s via lexical-only failover)
+- Code passages: ~1.5–2s per query (slight increase from winnow:e4b's 1–1.3s)
+
+**Trade-off:** Slightly slower per-query, but dramatically better judgment quality across document types and no automatic degradation to lexical re-ranking.
+
+---
+
+## 9. References
 
 - Ollaya — download and install: <https://ollaya.dev>
 - `winnow:e4b` model page: <https://ollaya.dev/library/winnow>
